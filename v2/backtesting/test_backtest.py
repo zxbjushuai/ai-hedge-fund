@@ -200,6 +200,7 @@ def fd():
         yield client
 
 
+@pytest.mark.live
 @pytestmark_live
 def test_pead_alpha_live(fd):
     from v2.signals import PEADModel

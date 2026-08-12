@@ -46,6 +46,34 @@ poetry run python -m v2.demo.backtest
 poetry run pytest v2/
 ```
 
+## Historical simulation UI
+
+Configure one supported v2 LLM provider in `.env` (`ANTHROPIC_API_KEY`, or
+`DEEPSEEK_API_KEY` with optional `V2_LLM_PROVIDER=deepseek`), then start the
+API and React UI:
+
+```bash
+# terminal 1, repository root
+poetry run python -m v2.run_daemon v2/funds/example.yaml --interval manual
+
+# terminal 2
+cd app/frontend
+npm run dev
+```
+
+The daemon writes console, API access, scheduler, and simulation logs to
+`logs/YYYY-MM-DD/backend.log`, switching directories automatically at local
+midnight. Use `--log-dir <path>` to choose another root. The `app/run.bat`
+and `app/run.sh` launchers additionally save frontend output as
+`logs/YYYY-MM-DD/frontend.log` and raw backend startup output as
+`backend-console.log`; these files remain after shutdown.
+
+Open `http://localhost:5173`, click the Backtest chart icon, fetch historical
+data first, then run a simulation over a date range covered by the cache.
+Signals use the preceding close, fills use the next trading-day open, and NAV
+uses that day's close. Yahoo quarterly filing dates are conservatively
+estimated as report period + 45 days and are labelled in the UI.
+
 All API responses cache to disk (`.v2_cache/`, gitignored), so reruns are fast,
 free, and work offline once warmed.
 

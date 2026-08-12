@@ -52,6 +52,9 @@ class FinancialMetrics(BaseModel):
     filing_date: str | None = None
     filing_datetime: str | None = None
 
+    # Historical share count, used to reconstruct point-in-time market cap.
+    shares_outstanding: float | None = None
+
     # Valuation
     market_cap: float | None = None
     enterprise_value: float | None = None

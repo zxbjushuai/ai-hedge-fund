@@ -37,3 +37,5 @@ class Fill(BaseModel):
     side: Literal["buy", "sell"]
     quantity: int
     price: float
+    fee: float = 0.0
+    total_amount: float | None = None

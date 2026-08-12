@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Hedge Fund — Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
+.header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
+.header h1 { font-size: 20px; color: #58a6ff; }
+.header .status { display: flex; gap: 16px; align-items: center; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.status-dot.running { background: #3fb950; }
+.status-dot.stopped { background: #f85149; }
+.btn { padding: 8px 16px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; cursor: pointer; font-size: 13px; }
+.btn:hover { background: #30363d; }
+.btn.primary { background: #238636; border-color: #238636; color: #fff; }
+.btn.primary:hover { background: #2ea043; }
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+.card .label { font-size: 12px; color: #8b949e; text-transform: uppercase; margin-bottom: 8px; }
+.card .value { font-size: 28px; font-weight: 600; }
+.card .value.green { color: #3fb950; }
+.card .value.red { color: #f85149; }
+.card .value.blue { color: #58a6ff; }
+.chart-container { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
+.chart-container h2 { font-size: 16px; margin-bottom: 16px; color: #e6edf3; }
+.table-container { background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
+.table-container h2 { font-size: 16px; padding: 16px 20px; border-bottom: 1px solid #30363d; color: #e6edf3; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 10px 20px; text-align: left; font-size: 13px; }
+th { color: #8b949e; font-weight: 500; border-bottom: 1px solid #30363d; }
+td { border-bottom: 1px solid #21262d; }
+td.green { color: #3fb950; }
+td.red { color: #f85149; }
+.tabs { display: flex; gap: 0; margin-bottom: 0; }
+.tab { padding: 10px 20px; background: transparent; border: none; color: #8b949e; cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent; }
+.tab:hover { color: #c9d1d9; }
+.tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+.loading { text-align: center; padding: 40px; color: #8b949e; }
+.error { background: #da3633; color: #fff; padding: 12px 20px; border-radius: 6px; margin-bottom: 16px; display: none; }
+.row { display: flex; gap: 24px; margin-bottom: 24px; }
+.col { flex: 1; }
+@media (max-width: 768px) {
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .row { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>AI Hedge Fund — Dashboard</h1>
+  <div class="status">
+    <span id="statusText"><span class="status-dot stopped"></span> Stopped</span>
+    <button class="btn" onclick="refreshAll()">Refresh</button>
+    <button class="btn primary" onclick="triggerCycle()">Run Cycle</button>
+  </div>
+</div>
+
+<div class="container">
+  <div id="errorMsg" class="error"></div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="label">Net Asset Value</div>
+      <div class="value blue" id="navValue">--</div>
+    </div>
+    <div class="card">
+      <div class="label">Cash</div>
+      <div class="value" id="cashValue">--</div>
+    </div>
+    <div class="card">
+      <div class="label">Equity</div>
+      <div class="value" id="equityValue">--</div>
+    </div>
+    <div class="card">
+      <div class="label">Total P&L</div>
+      <div class="value" id="pnlValue">--</div>
+    </div>
+  </div>
+
+  <div class="chart-container">
+    <h2>NAV History</h2>
+    <canvas id="navChart" height="300"></canvas>
+  </div>
+
+  <div class="row">
+    <div class="col table-container">
+      <h2>Current Positions</h2>
+      <div id="positionsTable"><div class="loading">Loading...</div></div>
+    </div>
+    <div class="col table-container">
+      <h2>Recent Trades</h2>
+      <div id="tradesTable"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/dashboard';
+let navChart = null;
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 5000);
+}
+
+function formatUSD(n) {
+  if (n == null) return '--';
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatShares(n) {
+  if (n == null) return '--';
+  return n.toLocaleString('en-US');
+}
+
+async function loadSummary() {
+  const data = await fetchJSON(API + '/summary');
+  document.getElementById('navValue').textContent = formatUSD(data.nav);
+  document.getElementById('cashValue').textContent = formatUSD(data.cash);
+  document.getElementById('equityValue').textContent = formatUSD(data.equity);
+  const pnlEl = document.getElementById('pnlValue');
+  pnlEl.textContent = formatUSD(data.pnl_total);
+  pnlEl.className = 'value ' + (data.pnl_total >= 0 ? 'green' : 'red');
+}
+
+async function loadNavHistory() {
+  const data = await fetchJSON(API + '/nav-history?limit=365');
+  const labels = data.history.map(h => h.date);
+  const navs = data.history.map(h => h.nav);
+  const cash = data.history.map(h => h.cash);
+
+  const ctx = document.getElementById('navChart').getContext('2d');
+  if (navChart) navChart.destroy();
+  navChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'NAV', data: navs, borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.1)', fill: true, tension: 0.2 },
+        { label: 'Cash', data: cash, borderColor: '#8b949e', borderDash: [4,4], fill: false, tension: 0.2 },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: '#c9d1d9' } } },
+      scales: {
+        x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', callback: v => formatUSD(v) }, grid: { color: '#21262d' } },
+      },
+    },
+  });
+}
+
+async function loadPositions() {
+  const data = await fetchJSON(API + '/positions');
+  const pos = data.positions;
+  if (Object.keys(pos).length === 0) {
+    document.getElementById('positionsTable').innerHTML = '<div class="loading">No open positions</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th></tr></thead><tbody>';
+  for (const [ticker, info] of Object.entries(pos)) {
+    html += `<tr>
+      <td style="color:#58a6ff;font-weight:500">${ticker}</td>
+      <td class="${info.shares > 0 ? 'green' : 'red'}">${info.shares > 0 ? '+' : ''}${formatShares(info.shares)}</td>
+      <td>${formatUSD(info.avg_cost)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  document.getElementById('positionsTable').innerHTML = html;
+}
+
+async function loadTrades() {
+  const data = await fetchJSON(API + '/trades?limit=50');
+  if (data.trades.length === 0) {
+    document.getElementById('tradesTable').innerHTML = '<div class="loading">No trades yet</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Date</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Price</th><th>Fee</th></tr></thead><tbody>';
+  for (const t of data.trades) {
+    html += `<tr>
+      <td style="color:#8b949e">${t.cycle_date}</td>
+      <td style="color:#58a6ff;font-weight:500">${t.ticker}</td>
+      <td class="${t.side === 'BUY' ? 'green' : 'red'}">${t.side}</td>
+      <td>${formatShares(t.quantity)}</td>
+      <td>${formatUSD(t.price)}</td>
+      <td style="color:#8b949e">${formatUSD(t.fee)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  document.getElementById('tradesTable').innerHTML = html;
+}
+
+async function loadStatus() {
+  try {
+    const data = await fetchJSON(API + '/status');
+    const el = document.getElementById('statusText');
+    if (data.running) {
+      el.innerHTML = '<span class="status-dot running"></span> Running — ' + data.fund + ' | ' + data.universe.join(', ');
+    } else {
+      el.innerHTML = '<span class="status-dot stopped"></span> ' + (data.message || 'Stopped — ' + (data.fund || 'no fund loaded'));
+    }
+  } catch (e) {
+    // ignore status errors
+  }
+}
+
+async function triggerCycle() {
+  try {
+    const btn = document.querySelector('.btn.primary');
+    btn.textContent = 'Running...';
+    btn.disabled = true;
+    await fetch(API + '/run-cycle', { method: 'POST' });
+    await refreshAll();
+  } catch (e) {
+    showError('Cycle failed: ' + e.message);
+  } finally {
+    const btn = document.querySelector('.btn.primary');
+    btn.textContent = 'Run Cycle';
+    btn.disabled = false;
+  }
+}
+
+async function refreshAll() {
+  try {
+    await Promise.all([loadSummary(), loadNavHistory(), loadPositions(), loadTrades(), loadStatus()]);
+  } catch (e) {
+    showError('Failed to load data: ' + e.message);
+  }
+}
+
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>

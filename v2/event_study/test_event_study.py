@@ -189,6 +189,7 @@ def fd():
         yield client
 
 
+@pytest.mark.live
 @pytestmark_live
 def test_compute_car_live(fd):
     from v2.event_study import compute_car
@@ -202,6 +203,7 @@ def test_compute_car_live(fd):
             assert np.isfinite(e.car_0_1)
 
 
+@pytest.mark.live
 @pytestmark_live
 def test_compute_car_multi_ticker(fd):
     from v2.event_study import compute_car

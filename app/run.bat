@@ -7,6 +7,11 @@ set "INFO=[INFO]"
 set "SUCCESS=[SUCCESS]"
 set "WARNING=[WARNING]"
 set "ERROR=[ERROR]"
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "LOG_DATE=%%i"
+set "LOG_DIR=%~dp0..\logs\%LOG_DATE%"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+set "BACKEND_CONSOLE_LOG=%LOG_DIR%\backend-console.log"
+set "FRONTEND_LOG=%LOG_DIR%\frontend.log"
 
 REM Check Node.js
 where node >nul 2>&1
@@ -167,11 +172,11 @@ if not exist "..\.env" (
 
 REM Setup database
 echo %INFO% Setting up database...
-echo %INFO% Database: SQLite (hedge_fund.db)
+echo %INFO% Simulation database: SQLite (fund.db)
 echo %INFO% Location: Project root directory
 echo %INFO% Tables will be created automatically on first backend startup
 
-if exist "..\hedge_fund.db" (
+if exist "..\fund.db" (
     echo %SUCCESS% Database file already exists
 ) else (
     echo %INFO% Database will be created when backend starts for the first time
@@ -226,7 +231,7 @@ REM Start backend
 echo %INFO% Launching backend server...
 REM Run from project root to ensure proper Python imports
 cd ..
-start /b poetry run uvicorn app.backend.main:app --reload --host 127.0.0.1 --port 8000
+start /b poetry run python -m v2.run_daemon v2/funds/example.yaml --interval manual --host 127.0.0.1 --port 8000 --log-dir logs >> "%BACKEND_CONSOLE_LOG%" 2>&1
 cd app
 
 timeout /t 3 /nobreak >nul
@@ -235,7 +240,7 @@ REM Check database initialization
 echo %INFO% Checking database initialization...
 timeout /t 2 /nobreak >nul
 
-if exist "..\hedge_fund.db" (
+if exist "..\fund.db" (
     echo %SUCCESS% Database initialized successfully
 ) else (
     echo %WARNING% Database file not found, but will be created on first API call
@@ -244,7 +249,7 @@ if exist "..\hedge_fund.db" (
 REM Start frontend
 echo %INFO% Launching frontend development server...
 cd frontend
-start /b npm run dev
+start /b npm.cmd run dev >> "%FRONTEND_LOG%" 2>&1
 cd ..
 
 timeout /t 5 /nobreak >nul
@@ -258,7 +263,8 @@ echo %SUCCESS% AI Hedge Fund web application is now running
 echo %INFO% Frontend: http://localhost:5173
 echo %INFO% Backend:  http://localhost:8000
 echo %INFO% Docs:     http://localhost:8000/docs
-echo %INFO% Database: SQLite (hedge_fund.db in project root)
+echo %INFO% Simulation database: SQLite (fund.db in project root)
+echo %INFO% Logs:     %LOG_DIR%
 echo.
 echo %INFO% Press any key to stop both services...
 pause >nul

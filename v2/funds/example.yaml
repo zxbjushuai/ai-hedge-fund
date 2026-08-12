@@ -8,16 +8,23 @@ name: example-fund
 universe: [AAPL, MSFT, NVDA, GOOGL, AMZN]
 strategies:
   - name: deep-value          # discretionary pod: Graham-led, long-biased
-    weight: 0.6               # capital slice, relative to sibling strategies
+    weight: 0.5               # capital slice, relative to sibling strategies
     models:
       - name: graham
         weight: 2.0
       - name: buffett
       - name: munger
   - name: earnings-drift      # systematic pod: post-earnings drift
-    weight: 0.4
+    weight: 0.2
     models:
       - name: pead
+  - name: price-trend         # deterministic baseline; no LLM/API calls
+    weight: 0.3
+    models:
+      - name: price_momentum
+        params:
+          lookback_days: 20
+          full_signal_return: 0.10
 risk:
   max_position_pct: 0.25      # master risk: no single name above 25% of equity
   max_gross_exposure: 1.0     # unlevered, across the netted book

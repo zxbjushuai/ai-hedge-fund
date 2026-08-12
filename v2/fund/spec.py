@@ -129,14 +129,14 @@ class FundSpec(BaseModel):
 
 def load_spec(path: str | Path) -> FundSpec:
     """Load a mandate from YAML. Validation errors carry the pydantic detail."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return FundSpec(**data)
 
 
 def load_strategy(path: str | Path) -> StrategySpec:
     """Load one strategy (a library file under v2/strategies/) from YAML."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return StrategySpec(**data)
 

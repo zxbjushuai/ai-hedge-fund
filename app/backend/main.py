@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 import logging
 import asyncio
 
@@ -7,9 +8,14 @@ from app.backend.routes import api_router
 from app.backend.database.connection import engine
 from app.backend.database.models import Base
 from app.backend.services.ollama_service import ollama_service
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure daily logs when this module is launched directly with uvicorn.
+# The combined daemon configures them first, so it is left untouched.
+from v2.logging_config import DailyFileHandler, configure_logging
+if not any(isinstance(handler, DailyFileHandler) for handler in logging.getLogger().handlers):
+    configure_logging(Path(__file__).resolve().parents[2] / "logs")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Hedge Fund API", description="Backend API for AI Hedge Fund", version="0.1.0")
@@ -20,11 +26,22 @@ Base.metadata.create_all(bind=engine)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Frontend URLs
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files for the dashboard
+static_dir = Path(__file__).parent / "static"
+static_dir.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/static/dashboard.html")
+
 
 # Include all routes
 app.include_router(api_router)

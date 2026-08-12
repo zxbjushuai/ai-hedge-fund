@@ -15,11 +15,13 @@ from v2.signals.graham import GrahamAgent
 from v2.signals.llm_agent import LLMAgent
 from v2.signals.lynch import LynchAgent
 from v2.signals.munger import MungerAgent
+from v2.signals.momentum import PriceMomentumModel
 from v2.signals.pead import PEADModel
 
 ALPHA_MODEL_REGISTRY: dict[str, type[AlphaModel]] = {
     # Quant models
     "pead": PEADModel,
+    "price_momentum": PriceMomentumModel,
     # LLM investor agents
     "buffett": BuffettAgent,
     "munger": MungerAgent,
@@ -38,5 +40,6 @@ __all__ = [
     "LynchAgent",
     "DruckenmillerAgent",
     "PEADModel",
+    "PriceMomentumModel",
     "ALPHA_MODEL_REGISTRY",
 ]

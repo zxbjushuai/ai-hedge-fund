@@ -14,6 +14,7 @@ from v2.data.models import (
     Price,
 )
 from v2.data.protocol import DataClient
+from v2.data.yfinance_client import YFinanceClient
 
 __all__ = [
     "CachedDataClient",
@@ -29,4 +30,5 @@ __all__ = [
     "FinancialMetrics",
     "InsiderTrade",
     "Price",
+    "YFinanceClient",
 ]

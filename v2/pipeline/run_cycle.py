@@ -51,6 +51,9 @@ def run_cycle(
     as_of: str,
     broker: Broker,
     data_client: DataClient,
+    execution_prices: dict[str, float] | None = None,
+    valuation_prices: dict[str, float] | None = None,
+    execution_date: str | None = None,
 ) -> CycleRecord:
     """Run one tick of *fund* as of *as_of* (YYYY-MM-DD) and return the record."""
     spec = fund.spec
@@ -100,12 +103,17 @@ def run_cycle(
 
     risk = apply_limits(netted, spec.risk)
 
-    orders = build_orders(risk.weights, held, marks, equity_before)
-    fills: list[Fill] = [broker.place_order(o) for o in orders]
+    order_marks = execution_prices or marks
+    orders = build_orders(risk.weights, held, order_marks, equity_before)
+    fills: list[Fill] = [broker.place_order(o, cycle_date=execution_date or as_of) for o in orders]
 
     positions_after = {t: p.shares for t, p in broker.positions().items()}
     cash_after = broker.cash()
-    nav = cash_after + sum(s * marks[t] for t, s in positions_after.items())
+    nav_marks = valuation_prices or marks
+    missing = sorted(set(positions_after) - set(nav_marks))
+    if missing:
+        raise ValueError(f"cannot value positions without closing prices: {missing}")
+    nav = cash_after + sum(s * nav_marks[t] for t, s in positions_after.items())
 
     return CycleRecord(
         fund=spec.name,

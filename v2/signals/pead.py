@@ -19,7 +19,7 @@ from v2.models import Signal
 from v2.signals.base import QuantModel
 
 _RETROSPECTIVE_CUTOFF_DAYS = 45   # drop filings whose data is stale vs report period
-_SOURCE_PRIORITY = {"8-K": 0, "10-Q": 1, "10-K": 2, "20-F": 3}  # 8-K = earliest announcement
+_SOURCE_PRIORITY = {"earnings": 0, "8-K": 1, "10-Q": 2, "10-K": 3, "20-F": 4}
 
 
 class PEADModel(QuantModel):

@@ -157,12 +157,12 @@ setup_database() {
     print_status "Setting up database..."
     
     # Database will be automatically created by the backend when it starts
-    print_status "Database: SQLite (hedge_fund.db)"
+    print_status "Simulation database: SQLite (fund.db)"
     print_status "Location: Project root directory"
     print_status "Tables will be created automatically on first backend startup"
     
     # Check if database already exists
-    if [[ -f "../hedge_fund.db" ]]; then
+    if [[ -f "../fund.db" ]]; then
         print_success "Database file already exists!"
     else
         print_status "Database will be created when backend starts for the first time"
@@ -218,9 +218,12 @@ start_services() {
     print_status "Press Ctrl+C to stop both services"
     echo ""
     
-    # Create a temporary directory for log files
-    LOG_DIR=$(mktemp -d)
-    BACKEND_LOG="$LOG_DIR/backend.log"
+    # Persist startup output by local date; application logs share this folder.
+    LOG_DATE=$(date +%F)
+    PROJECT_ROOT=$(cd .. && pwd)
+    LOG_DIR="$PROJECT_ROOT/logs/$LOG_DATE"
+    mkdir -p "$LOG_DIR"
+    BACKEND_LOG="$LOG_DIR/backend-console.log"
     FRONTEND_LOG="$LOG_DIR/frontend.log"
     
     # Function to cleanup on exit
@@ -236,9 +239,6 @@ start_services() {
             kill "$FRONTEND_PID" 2>/dev/null || true
         fi
         
-        # Clean up log directory
-        rm -rf "$LOG_DIR" 2>/dev/null || true
-        
         print_success "Services stopped. Goodbye!"
         exit 0
     }
@@ -250,7 +250,7 @@ start_services() {
     print_status "Starting backend server..."
     # Run from the app directory (parent of backend) to ensure proper Python imports
     cd ..
-    poetry run uvicorn app.backend.main:app --reload --host 127.0.0.1 --port 8000 > "$LOG_DIR/backend.log" 2>&1 &
+    poetry run python -m v2.run_daemon v2/funds/example.yaml --interval manual --host 127.0.0.1 --port 8000 --log-dir logs > "$BACKEND_LOG" 2>&1 &
     BACKEND_PID=$!
     cd app
     
@@ -270,7 +270,7 @@ start_services() {
     print_status "Checking database initialization..."
     sleep 2  # Give backend time to initialize database
     
-    if [[ -f "../hedge_fund.db" ]]; then
+    if [[ -f "../fund.db" ]]; then
         print_success "Database initialized successfully!"
     else
         print_warning "Database file not found, but will be created on first API call"
@@ -308,7 +308,8 @@ start_services() {
     print_status "Frontend (Web Interface): http://localhost:5173"
     print_status "Backend (API): http://localhost:8000"
     print_status "API Documentation: http://localhost:8000/docs"
-    print_status "Database: SQLite (hedge_fund.db in project root)"
+    print_status "Simulation database: SQLite (fund.db in project root)"
+    print_status "Logs: $LOG_DIR"
     echo ""
     print_status "Press Ctrl+C to stop both services"
     echo ""
@@ -370,7 +371,7 @@ if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
     echo "  - Frontend: http://localhost:5173"
     echo "  - Backend API: http://localhost:8000"
     echo "  - API Docs: http://localhost:8000/docs"
-    echo "  - Database: SQLite file (hedge_fund.db) in project root"
+    echo "  - Simulation database: SQLite file (fund.db) in project root"
     echo ""
     exit 0
 fi

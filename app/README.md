@@ -136,6 +136,11 @@ npm install  # or pnpm install or yarn install
 
 ### Running the Application
 
+For the combined application, use `app/run.bat` on Windows or `./app/run.sh`
+on macOS/Linux. Both launchers persist output under
+`logs/YYYY-MM-DD/`. The backend also switches to a new dated directory at
+local midnight without a restart.
+
 1. Start the backend server:
 ```bash
 # In one terminal, from the backend directory
