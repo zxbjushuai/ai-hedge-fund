@@ -190,6 +190,7 @@ class EarningsData(BaseModel):
     earnings_per_share: float | None = None
     estimated_earnings_per_share: float | None = None
     eps_surprise: str | None = None  # "BEAT" | "MISS" | "MEET"
+    eps_surprise_percent: float | None = None
 
     # Income statement
     net_income: float | None = None

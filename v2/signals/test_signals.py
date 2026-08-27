@@ -19,10 +19,14 @@ class MockFDClient:
 
 
 def _rec(report_period, filing_date, surprise, source_type="8-K"):
+    surprise_percent = {"BEAT": 10.0, "MISS": -10.0, "MEET": 0.0}.get(surprise)
     return EarningsRecord(
         ticker="TEST", report_period=report_period, source_type=source_type,
         filing_date=filing_date,
-        quarterly=EarningsData(eps_surprise=surprise) if surprise else None,
+        quarterly=EarningsData(
+            eps_surprise=surprise,
+            eps_surprise_percent=surprise_percent,
+        ) if surprise else None,
     )
 
 

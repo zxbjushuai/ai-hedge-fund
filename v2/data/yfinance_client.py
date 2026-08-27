@@ -30,6 +30,7 @@ from v2.data.models import (
     InsiderTrade,
     Price,
 )
+from v2.data.earnings import surprise_direction
 from v2.data.protocol import DataClient
 
 logger = logging.getLogger(__name__)
@@ -437,12 +438,17 @@ class YFinanceClient:
                                 quarterly=EarningsData(
                                     earnings_per_share=actual,
                                     estimated_earnings_per_share=estimate,
-                                    eps_surprise="BEAT" if (surprise or 0) > 0 else "MISS" if (surprise or 0) < 0 else None,
+                                    eps_surprise=surprise_direction(surprise),
+                                    eps_surprise_percent=surprise,
                                 ),
                             ))
                     return records
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "yfinance get_earnings_dates(%s) failed; PEAD may be unavailable: %s",
+                    ticker,
+                    exc,
+                )
 
             def _empty_earnings_data() -> EarningsData:
                 return EarningsData()

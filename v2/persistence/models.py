@@ -127,7 +127,7 @@ class MetricsCache(Base):
 
 
 class EarningsCache(Base):
-    """Point-in-time Yahoo earnings announcement and EPS surprise."""
+    """Point-in-time earnings announcement and EPS surprise."""
 
     __tablename__ = "earnings_cache"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -137,6 +137,7 @@ class EarningsCache(Base):
     actual_eps: Mapped[float | None] = mapped_column(Float, nullable=True)
     estimated_eps: Mapped[float | None] = mapped_column(Float, nullable=True)
     surprise_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="yahoo")
     created_at: Mapped[str] = mapped_column(String(26), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
     __table_args__ = (
         UniqueConstraint("ticker", "announcement_date", name="uq_earnings_cache"),

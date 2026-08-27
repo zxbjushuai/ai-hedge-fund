@@ -169,6 +169,10 @@ def cache_fetch(data: CacheFetchRequest):
     tickers, start_date, end_date = data.tickers, data.start_date.isoformat(), data.end_date.isoformat()
 
     from v2.data.yfinance_client import YFinanceClient
+    from v2.data.earnings import (
+        earnings_surprise_percent,
+        has_actionable_surprise,
+    )
     from v2.persistence.models import EarningsCache, MetricsCache, PriceCache
 
     client = YFinanceClient()
@@ -249,21 +253,26 @@ def cache_fetch(data: CacheFetchRequest):
 
             try:
                 earnings = client.get_earnings_history(t, limit=40)
+                if not earnings:
+                    ticker_results["warnings"].append(
+                        "Yahoo returned no earnings history; PEAD will remain neutral"
+                    )
+                elif not has_actionable_surprise(earnings):
+                    ticker_results["warnings"].append(
+                        "Yahoo returned no complete actual/estimate EPS surprise; PEAD will remain neutral"
+                    )
                 for e in earnings:
                     q = e.quarterly
                     actual = q.earnings_per_share if q else None
-                    surprise_label = q.eps_surprise if q else None
                     estimated = q.estimated_earnings_per_share if q else None
-                    if actual is not None and estimated not in (None, 0):
-                        surprise = ((actual - estimated) / abs(estimated)) * 100
-                    else:
-                        surprise = 1.0 if surprise_label == "BEAT" else -1.0 if surprise_label == "MISS" else None
+                    surprise = earnings_surprise_percent(e)
                     existing = session.query(EarningsCache).filter_by(ticker=t, announcement_date=e.filing_date).first()
                     values = dict(
                         report_period=e.report_period,
                         actual_eps=actual,
                         estimated_eps=estimated,
                         surprise_pct=surprise,
+                        source="yahoo",
                     )
                     if existing:
                         for key, value in values.items(): setattr(existing, key, value)
@@ -377,6 +386,7 @@ def _simulation_preflight(data: SimRunRequest) -> dict:
     from v2.simulation.runner import (
         _trading_days,
         disable_unavailable_models,
+        estimate_filing_prompt_calls,
         validate_cached_data,
     )
 
@@ -392,25 +402,23 @@ def _simulation_preflight(data: SimRunRequest) -> dict:
         })
     warnings.extend(disable_unavailable_models(spec, _DB_PATH, tickers, end_date))
     from v2.signals import ALPHA_MODEL_REGISTRY, LLMAgent
-    llm_models = sum(
-        1
+    persona_names = {
+        model.name
         for strategy in spec.strategies
         for model in strategy.models
         if issubclass(ALPHA_MODEL_REGISTRY[model.name], LLMAgent)
-    )
+    }
     provider = "none"
     model_name = "none"
     estimate = 0
     trading_days = _trading_days(_DB_PATH, tickers, start_date, end_date)
-    if llm_models:
+    if persona_names:
         from v2.llm import get_llm
         llm = get_llm()
         provider, model_name = type(llm).__name__, llm.model
-        # The first trading day seeds NAV. Every subsequent day forms signals
-        # from the preceding close for every ticker. Historical valuation
-        # fields normally change with that close, so each is a distinct cold
-        # prompt even between financial filings.
-        estimate = max(len(trading_days) - 1, 0) * len(tickers) * llm_models
+        estimate = estimate_filing_prompt_calls(
+            _DB_PATH, tickers, trading_days, persona_names,
+        )
     result = {
         "estimated_llm_calls": estimate,
         "estimate_kind": "cold_cache_upper_bound",

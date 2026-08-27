@@ -72,6 +72,10 @@ def test_mock_client_hides_metrics_until_estimated_filing_date(tmp_path: Path):
             ticker="AAA", date="2024-05-15", open=10, high=10,
             low=10, close=10, volume=1,
         ))
+        session.add(PriceCache(
+            ticker="AAA", date="2024-05-16", open=20, high=20,
+            low=20, close=20, volume=1,
+        ))
         session.add(MetricsCache(
             ticker="AAA", report_period="2024-03-31",
             filing_date="2024-05-15", filing_date_source="estimated_45d",
@@ -86,6 +90,77 @@ def test_mock_client_hides_metrics_until_estimated_filing_date(tmp_path: Path):
     assert visible[0].market_cap == 1000
     assert visible[0].price_to_book_ratio == 2
     assert visible[0].price_to_earnings_ratio == 5
+    # A later market close must not mutate the quarterly LLM snapshot.
+    later = client.get_financial_metrics("AAA", "2024-05-16")
+    assert later[0].market_cap == 1000
+    assert later[0].price_to_book_ratio == 2
+    assert later[0].price_to_earnings_ratio == 5
+
+
+def test_filing_prompt_call_estimate_ignores_daily_prices_and_counts_new_filings(tmp_path: Path):
+    from v2.simulation.runner import estimate_filing_prompt_calls
+
+    db = tmp_path / "estimate.db"
+    days = ["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
+    with get_session(str(db)) as session:
+        for index, filing_date in enumerate(("2024-01-01", "2024-04-01", "2024-07-01", "2024-10-01")):
+            metric = FinancialMetrics(ticker="AAA", report_period=f"2023-{index + 1:02d}-01", period="ttm")
+            session.add(MetricsCache(
+                ticker="AAA", report_period=metric.report_period,
+                filing_date=filing_date, filing_date_source="test",
+                data=metric.model_dump_json(exclude={"ticker"}),
+            ))
+        session.commit()
+
+    assert estimate_filing_prompt_calls(str(db), ["AAA"], days, {"buffett", "graham"}) == 2
+
+    with get_session(str(db)) as session:
+        metric = FinancialMetrics(ticker="AAA", report_period="2024-12-31", period="ttm")
+        session.add(MetricsCache(
+            ticker="AAA", report_period=metric.report_period,
+            filing_date="2025-01-06", filing_date_source="test",
+            data=metric.model_dump_json(exclude={"ticker"}),
+        ))
+        session.commit()
+
+    assert estimate_filing_prompt_calls(str(db), ["AAA"], days, {"buffett", "graham"}) == 4
+
+
+def test_cache_api_keeps_missing_yahoo_surprise_neutral(tmp_path: Path, monkeypatch):
+    import app.backend.routes.dashboard as dashboard
+    import v2.data.yfinance_client as yahoo_module
+
+    class FakeYahoo:
+        def get_prices(self, ticker, start_date, end_date):
+            return [Price(open=10, high=10, low=10, close=10, volume=1, time="2025-01-02")]
+
+        def get_financial_metrics(self, ticker, end_date, limit=40):
+            return [FinancialMetrics(ticker=ticker, report_period="2024-09-30", period="ttm")]
+
+        def get_earnings_history(self, ticker, limit=40):
+            return [EarningsRecord(
+                ticker=ticker, report_period="2024-09-30", source_type="earnings",
+                filing_date="2024-11-01",
+                quarterly=EarningsData(earnings_per_share=2.0),
+            )]
+
+        def close(self):
+            pass
+
+    db = tmp_path / "earnings-neutral.db"
+    monkeypatch.setattr(dashboard, "_DB_PATH", str(db))
+    monkeypatch.setattr(yahoo_module, "YFinanceClient", FakeYahoo)
+
+    result = dashboard.cache_fetch(dashboard.CacheFetchRequest(
+        tickers=["AAA"], start_date="2024-01-01", end_date="2025-01-02",
+    ))
+    assert "PEAD will remain neutral" in " ".join(result["results"]["AAA"]["warnings"])
+    with get_session(str(db)) as session:
+        event = session.execute(select(EarningsCache)).scalar_one()
+        assert event.actual_eps == 2.0
+        assert event.estimated_eps is None
+        assert event.surprise_pct is None
+        assert event.source == "yahoo"
 
 
 class _BullishModel(AlphaModel):

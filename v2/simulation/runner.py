@@ -38,6 +38,37 @@ def _trading_days(db_path: str, tickers: list[str], start: str, end: str) -> lis
         ).scalars())
 
 
+def estimate_filing_prompt_calls(
+    db_path: str,
+    tickers: list[str],
+    trading_days: list[str],
+    persona_names: set[str],
+) -> int:
+    """Cold-cache calls for bootstrap snapshots plus visible filing changes.
+
+    Signals are formed on every trading day except the final execution day.
+    Exact daily prices do not enter the quarterly fundamentals prompt.
+    """
+    if len(trading_days) < 2 or not persona_names:
+        return 0
+    first_signal_day = trading_days[0]
+    last_signal_day = trading_days[-2]
+    snapshot_count = 0
+    with get_session(db_path) as session:
+        for ticker in sorted(set(t.upper() for t in tickers)):
+            changes = session.execute(
+                select(MetricsCache.filing_date)
+                .where(
+                    MetricsCache.ticker == ticker,
+                    MetricsCache.filing_date > first_signal_day,
+                    MetricsCache.filing_date <= last_signal_day,
+                )
+                .distinct()
+            ).scalars().all()
+            snapshot_count += 1 + len(changes)
+    return snapshot_count * len(persona_names)
+
+
 def validate_cached_data(db_path: str, tickers: list[str], start: str, end: str, require_earnings: bool = True) -> tuple[list[str], list[str]]:
     """Fail-fast point-in-time coverage validation shared by API and runner."""
     days = _trading_days(db_path, tickers, start, end)
@@ -61,6 +92,7 @@ def validate_cached_data(db_path: str, tickers: list[str], start: str, end: str,
                 EarningsCache.ticker == ticker,
                 EarningsCache.announcement_date <= end,
                 EarningsCache.surprise_pct.is_not(None),
+                EarningsCache.surprise_pct != 0,
             ).count()
             if require_earnings and earnings == 0:
                 warnings.append(f"{ticker}: no actionable EPS surprise; PEAD will be disabled if unavailable for the whole universe")
@@ -79,6 +111,7 @@ def disable_unavailable_models(spec, db_path: str, tickers: list[str], end: str)
                 EarningsCache.ticker.in_([ticker.upper() for ticker in tickers]),
                 EarningsCache.announcement_date <= end,
                 EarningsCache.surprise_pct.is_not(None),
+                EarningsCache.surprise_pct != 0,
             ).count()
         if actionable == 0:
             for strategy in spec.strategies:

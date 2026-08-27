@@ -120,7 +120,7 @@ class MockDataClient:
                     continue
                 if len(results) >= limit:
                     break
-            self._add_point_in_time_valuation(session, ticker, end_date, results)
+            self._add_filing_date_valuation(session, ticker, end_date, results)
             return results
         except Exception as e:
             logger.warning("MockDataClient.get_financial_metrics(%s) failed: %s", ticker, e)
@@ -129,19 +129,25 @@ class MockDataClient:
             session.close()
 
     @staticmethod
-    def _add_point_in_time_valuation(session, ticker: str, end_date: str, metrics: list[FinancialMetrics]) -> None:
-        """Value the latest visible fundamentals using the historical close."""
+    def _add_filing_date_valuation(session, ticker: str, end_date: str, metrics: list[FinancialMetrics]) -> None:
+        """Value the latest visible filing at its own point-in-time close.
+
+        The quarterly LLM prompt must remain stable between filings.  Daily
+        market valuation belongs to the event/quant layer, not to the filed
+        fundamentals prompt.
+        """
         if not metrics:
             return
+        latest = metrics[0]
+        valuation_date = min(end_date[:10], (latest.filing_date or end_date)[:10])
         price = session.execute(
             select(PriceCache.close)
-            .where(PriceCache.ticker == ticker.upper(), PriceCache.date <= end_date)
+            .where(PriceCache.ticker == ticker.upper(), PriceCache.date <= valuation_date)
             .order_by(PriceCache.date.desc())
             .limit(1)
         ).scalar_one_or_none()
         if price is None:
             return
-        latest = metrics[0]
         if latest.shares_outstanding and latest.shares_outstanding > 0:
             latest.market_cap = price * latest.shares_outstanding
         if latest.book_value_per_share and latest.book_value_per_share > 0:
@@ -207,7 +213,9 @@ class MockDataClient:
                 filing_date=r.announcement_date, filing_datetime=r.announcement_date,
                 quarterly=EarningsData(
                     earnings_per_share=r.actual_eps,
+                    estimated_earnings_per_share=r.estimated_eps,
                     eps_surprise=("BEAT" if (r.surprise_pct or 0) > 0 else "MISS" if (r.surprise_pct or 0) < 0 else None),
+                    eps_surprise_percent=r.surprise_pct,
                 ),
             ) for r in rows]
 

@@ -50,6 +50,9 @@ def _migrate(engine) -> None:
         "metrics_cache": {
             "filing_date_source": "VARCHAR(32) NOT NULL DEFAULT 'estimated_45d'",
         },
+        "earnings_cache": {
+            "source": "VARCHAR(32) NOT NULL DEFAULT 'yahoo'",
+        },
     }
     with engine.begin() as conn:
         inspector = inspect(conn)

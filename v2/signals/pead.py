@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from v2.data.earnings import earnings_surprise_percent, surprise_direction
 from v2.data.protocol import DataClient
 from v2.data.models import EarningsRecord
 from v2.models import Signal
@@ -77,6 +78,7 @@ class PEADModel(QuantModel):
             ),
             metadata={
                 "eps_surprise": surprise,
+                "eps_surprise_percent": event["surprise_pct"],
                 "source_type": event["source_type"],
                 "report_period": event["report_period"],
                 "filing_date": event["filing_date"],
@@ -105,12 +107,12 @@ class PEADModel(QuantModel):
             records = data_client.get_earnings_history(ticker, limit=self._earnings_limit)
             self._cache[ticker] = records
 
-        best: dict[str, tuple[int, EarningsRecord]] = {}
+        best: dict[str, tuple[int, EarningsRecord, float]] = {}
         for r in records:
             if not r.filing_date or not r.quarterly:
                 continue
-            surprise = r.quarterly.eps_surprise
-            if surprise not in ("BEAT", "MISS"):
+            surprise_pct = earnings_surprise_percent(r)
+            if surprise_pct in (None, 0):
                 continue
 
             # 45-day retrospective filter
@@ -121,16 +123,17 @@ class PEADModel(QuantModel):
             # Keep the highest-priority filing per report period (8-K wins)
             priority = _SOURCE_PRIORITY.get(r.source_type, 99)
             if r.report_period not in best or priority < best[r.report_period][0]:
-                best[r.report_period] = (priority, r)
+                best[r.report_period] = (priority, r, surprise_pct)
 
         return [
             {
                 "filing_date": r.filing_date,
                 "report_period": r.report_period,
                 "source_type": r.source_type,
-                "surprise": r.quarterly.eps_surprise,
+                "surprise": surprise_direction(surprise_pct),
+                "surprise_pct": surprise_pct,
             }
-            for _, r in best.values()
+            for _, r, surprise_pct in best.values()
         ]
 
 
