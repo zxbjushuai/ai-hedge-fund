@@ -11,8 +11,13 @@ export function SimResults({ result }: Props) {
   const chart = useMemo(() => {
     if (!result.nav_curve.length) return null;
     const values = result.nav_curve.map(p => p.nav);
-    const rawMin = Math.min(...values);
-    const rawMax = Math.max(...values);
+    const hasBenchmark = result.nav_curve.every(p => p.benchmark_nav != null);
+    const benchmarkValues = hasBenchmark
+      ? result.nav_curve.map(p => p.benchmark_nav as number)
+      : [];
+    const allValues = [...values, ...benchmarkValues];
+    const rawMin = Math.min(...allValues);
+    const rawMax = Math.max(...allValues);
     const rawRange = rawMax - rawMin;
     const padding = rawRange > 0 ? rawRange * 0.08 : Math.max(Math.abs(rawMax) * 0.01, 1);
     const min = rawMin - padding;
@@ -26,6 +31,9 @@ export function SimResults({ result }: Props) {
     const xScale = (i: number) => margin.left + (i / Math.max(result.nav_curve.length - 1, 1)) * plotWidth;
     const yScale = (v: number) => margin.top + ((max - v) / range) * plotHeight;
     const points = result.nav_curve.map((p, i) => `${xScale(i)},${yScale(p.nav)}`).join(' ');
+    const benchmarkPoints = hasBenchmark
+      ? result.nav_curve.map((p, i) => `${xScale(i)},${yScale(p.benchmark_nav as number)}`).join(' ')
+      : null;
     const baselineY = yScale(result.initial_capital);
     const yTicks = Array.from({ length: 5 }, (_, i) => {
       const value = max - (i / 4) * range;
@@ -40,7 +48,7 @@ export function SimResults({ result }: Props) {
       x: xScale(index),
     }));
 
-    return { w, h, points, baselineY, yTicks, xTicks, margin };
+    return { w, h, points, benchmarkPoints, baselineY, yTicks, xTicks, margin };
   }, [result]);
 
   return (
@@ -57,7 +65,7 @@ export function SimResults({ result }: Props) {
           </CardContent>
         </Card>
       )}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <MetricCard label="Final NAV" value={`$${result.final_nav.toLocaleString()}`} />
         <MetricCard
           label="Total Return"
@@ -66,12 +74,32 @@ export function SimResults({ result }: Props) {
         />
         <MetricCard label="Max Drawdown" value={`${result.max_drawdown_pct.toFixed(2)}%`} />
         <MetricCard label="Sharpe Ratio" value={result.sharpe_ratio.toFixed(2)} />
+        {result.benchmark_return_pct != null && (
+          <MetricCard
+            label={`${result.benchmark || 'Benchmark'} Return`}
+            value={`${result.benchmark_return_pct.toFixed(2)}%`}
+            positive={result.benchmark_return_pct >= 0}
+          />
+        )}
+        {result.excess_return_pct != null && (
+          <MetricCard
+            label="Excess Return"
+            value={`${result.excess_return_pct.toFixed(2)}%`}
+            positive={result.excess_return_pct >= 0}
+          />
+        )}
       </div>
 
       {chart && (
         <Card>
           <CardHeader>
-            <CardTitle>NAV Curve</CardTitle>
+            <CardTitle className="flex items-center gap-4">
+              <span>NAV Curve</span>
+              <span className="text-xs font-normal text-blue-500">Fund</span>
+              {chart.benchmarkPoints && (
+                <span className="text-xs font-normal text-cyan-500">{result.benchmark || 'Benchmark'}</span>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <svg viewBox={`0 0 ${chart.w} ${chart.h}`} className="w-full h-auto">
@@ -106,6 +134,10 @@ export function SimResults({ result }: Props) {
                 stroke="currentColor" strokeOpacity={0.15} strokeDasharray="4 2" />
               <polyline points={chart.points} fill="none" stroke="#3b82f6" strokeWidth="2"
                 strokeLinecap="round" strokeLinejoin="round" />
+              {chart.benchmarkPoints && (
+                <polyline points={chart.benchmarkPoints} fill="none" stroke="#06b6d4" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round" />
+              )}
             </svg>
           </CardContent>
         </Card>

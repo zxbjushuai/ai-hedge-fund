@@ -46,6 +46,10 @@ def _migrate(engine) -> None:
             "completed_at": "VARCHAR(26)",
             "warnings": "TEXT NOT NULL DEFAULT '[]'",
             "models": "TEXT NOT NULL DEFAULT '[]'",
+            "benchmark": "VARCHAR(10)",
+        },
+        "sim_nav_snapshot": {
+            "benchmark_nav": "FLOAT",
         },
         "metrics_cache": {
             "filing_date_source": "VARCHAR(32) NOT NULL DEFAULT 'estimated_45d'",

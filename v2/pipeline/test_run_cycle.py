@@ -223,6 +223,66 @@ def test_unpriced_held_ticker_raises():
         run_cycle(fund, "2024-06-04", broker, FakeDataClient(closes))
 
 
+def test_runtime_universe_takes_precedence_without_mutating_spec():
+    spec = _spec(universe=["AAPL", "MSFT"])
+    analyst = FakeAnalyst("a", views={"NVDA": 1.0})
+    fund = Fund(spec, models={"solo": [analyst]})
+
+    record = run_cycle(
+        fund, "2024-06-03", SimBroker(cash=100_000.0, fee_rate=0.0),
+        FakeDataClient(CLOSES), universe=[" nvda ", "NVDA"],
+    )
+
+    assert record.universe == ["NVDA"]
+    assert analyst.predict_calls == ["NVDA"]
+    assert spec.universe == ["AAPL", "MSFT"]
+
+
+def test_missing_execution_open_skips_only_that_ticker():
+    analyst = FakeAnalyst("a", views={"AAPL": 1.0, "MSFT": 1.0})
+    fund = Fund(_spec(universe=["AAPL", "MSFT"], max_position_pct=1.0),
+                models={"solo": [analyst]})
+    record = run_cycle(
+        fund, "2024-06-03", SimBroker(cash=100_000.0, fee_rate=0.0),
+        FakeDataClient(CLOSES),
+        execution_prices={"AAPL": 201.0},
+        valuation_prices={"AAPL": 202.0},
+        execution_date="2024-06-04",
+    )
+
+    assert {order.ticker for order in record.orders} == {"AAPL"}
+    assert any(skip.ticker == "MSFT" and "no execution open" in skip.reason
+               for skip in record.skipped)
+
+
+def test_empty_execution_map_never_falls_back_to_signal_marks():
+    fund = Fund(_spec(universe=["AAPL"], max_position_pct=1.0), models={
+        "solo": [FakeAnalyst("a", views={"AAPL": 1.0})],
+    })
+    record = run_cycle(
+        fund, "2024-06-03", SimBroker(cash=100_000.0, fee_rate=0.0),
+        FakeDataClient(CLOSES), execution_prices={}, valuation_prices={},
+        execution_date="2024-06-04",
+    )
+    assert record.orders == []
+    assert record.positions == {}
+
+
+def test_explicit_empty_valuation_map_fails_for_held_position():
+    fund = Fund(_spec(universe=["AAPL"], max_position_pct=1.0), models={
+        "solo": [FakeAnalyst("a", views={"AAPL": 1.0})],
+    })
+    broker = SimBroker(cash=100_000.0, fee_rate=0.0)
+    run_cycle(fund, "2024-06-03", broker, FakeDataClient(CLOSES))
+
+    with pytest.raises(ValueError, match="closing prices"):
+        run_cycle(
+            fund, "2024-06-04", broker, FakeDataClient(CLOSES),
+            execution_prices={"AAPL": 200.0}, valuation_prices={},
+            execution_date="2024-06-05",
+        )
+
+
 def test_analyst_error_propagates():
     """Fail loud: an infrastructure failure must not become a quiet no-trade."""
     fund = Fund(_spec(), models={

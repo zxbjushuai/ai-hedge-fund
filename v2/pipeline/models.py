@@ -41,6 +41,7 @@ class CycleRecord(BaseModel):
     fund: str
     as_of: str
     spec: FundSpec                      # self-contained audit copy
+    universe: list[str]                 # effective run-time universe for this cycle
     marks: dict[str, float]             # ticker -> close used for sizing and NAV
     skipped: list[TickerSkip]
     strategies: list[StrategyRecord]    # every sleeve, incl. each thesis

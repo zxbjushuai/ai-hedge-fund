@@ -34,7 +34,7 @@ from datetime import timedelta
 from v2.brokers.models import Fill
 from v2.brokers.protocol import Broker
 from v2.data.protocol import DataClient
-from v2.fund.spec import Fund
+from v2.fund.spec import Fund, normalize_universe
 from v2.models import Signal
 from v2.pipeline.execution import build_orders
 from v2.pipeline.models import CycleRecord, StrategyRecord, TickerSkip
@@ -54,13 +54,17 @@ def run_cycle(
     execution_prices: dict[str, float] | None = None,
     valuation_prices: dict[str, float] | None = None,
     execution_date: str | None = None,
+    universe: list[str] | None = None,
 ) -> CycleRecord:
     """Run one tick of *fund* as of *as_of* (YYYY-MM-DD) and return the record."""
     spec = fund.spec
+    effective_universe = normalize_universe(
+        universe if universe is not None else (spec.universe or [])
+    )
     held = broker.positions()
 
     marks, skipped = _mark_prices(
-        sorted(set(spec.universe) | set(held)), as_of, held, data_client,
+        sorted(set(effective_universe) | set(held)), as_of, held, data_client,
     )
 
     cash_before = broker.cash()
@@ -73,7 +77,7 @@ def run_cycle(
             "cannot size positions against a non-positive book"
         )
 
-    tradeable = [t for t in spec.universe if t in marks]
+    tradeable = [t for t in effective_universe if t in marks]
 
     # Each strategy runs its own analysts and blends its own sleeve; the fund
     # nets the sleeves by capital slice. A persona staffed into two strategies
@@ -103,13 +107,33 @@ def run_cycle(
 
     risk = apply_limits(netted, spec.risk)
 
-    order_marks = execution_prices or marks
-    orders = build_orders(risk.weights, held, order_marks, equity_before)
+    order_marks = marks if execution_prices is None else execution_prices
+    order_tickers = set(risk.weights) | set(held)
+    missing_execution = sorted(order_tickers - set(order_marks))
+    for ticker in missing_execution:
+        skipped.append(TickerSkip(
+            ticker=ticker,
+            reason=(
+                f"no execution open on {execution_date or as_of}; "
+                "order skipped and existing position unchanged"
+            ),
+        ))
+    executable_weights = {
+        ticker: weight for ticker, weight in risk.weights.items()
+        if ticker in order_marks
+    }
+    executable_positions = {
+        ticker: position for ticker, position in held.items()
+        if ticker in order_marks
+    }
+    orders = build_orders(
+        executable_weights, executable_positions, order_marks, equity_before,
+    )
     fills: list[Fill] = [broker.place_order(o, cycle_date=execution_date or as_of) for o in orders]
 
     positions_after = {t: p.shares for t, p in broker.positions().items()}
     cash_after = broker.cash()
-    nav_marks = valuation_prices or marks
+    nav_marks = marks if valuation_prices is None else valuation_prices
     missing = sorted(set(positions_after) - set(nav_marks))
     if missing:
         raise ValueError(f"cannot value positions without closing prices: {missing}")
@@ -119,6 +143,7 @@ def run_cycle(
         fund=spec.name,
         as_of=as_of,
         spec=spec,
+        universe=effective_universe,
         marks=marks,
         skipped=skipped,
         strategies=strategy_records,

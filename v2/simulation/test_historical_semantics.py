@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +23,7 @@ from v2.persistence.models import (
     TradeLog,
 )
 from v2.signals.base import AlphaModel
-from v2.simulation.runner import SimRunner, _trading_days
+from v2.simulation.runner import SimRunner, _trading_days, get_sim_result
 
 
 def test_sessions_are_isolated_by_normalized_database_path(tmp_path: Path):
@@ -34,17 +36,21 @@ def test_sessions_are_isolated_by_normalized_database_path(tmp_path: Path):
         assert session.execute(select(PriceCache)).scalars().all() == []
 
 
-def test_trading_calendar_requires_bars_for_whole_universe_and_records_cycle_date(tmp_path: Path):
+def test_trading_calendar_uses_benchmark_only_and_records_cycle_date(tmp_path: Path):
     db = tmp_path / "main.db"
     with get_session(str(db)) as session:
         for ticker, day in [
             ("AAA", "2024-01-05"),
             ("BBB", "2024-01-08"),
             ("AAA", "2024-01-08"),
+            ("SPY", "2024-01-05"),
+            ("SPY", "2024-01-08"),
         ]:
             session.add(PriceCache(ticker=ticker, date=day, open=10, high=12, low=9, close=11, volume=1))
         session.commit()
-    assert _trading_days(str(db), ["AAA", "BBB"], "2024-01-01", "2024-01-10") == ["2024-01-08"]
+    assert _trading_days(str(db), "SPY", "2024-01-01", "2024-01-10") == [
+        "2024-01-05", "2024-01-08",
+    ]
     broker = SimBroker(1000)
     broker.place_order(Order(ticker="AAA", side="buy", quantity=1, price=10), cycle_date="2024-01-08")
     assert broker._last_trades[0]["cycle_date"] == "2024-01-08"
@@ -57,6 +63,28 @@ def test_earnings_cache_schema(tmp_path: Path):
         session.add(EarningsCache(ticker="AAA", report_period="2024-01-01", announcement_date="2024-01-20", actual_eps=2, estimated_eps=1, surprise_pct=100))
         session.commit()
         assert session.execute(select(EarningsCache)).scalar_one().surprise_pct == 100
+
+
+def test_additive_migration_adds_nullable_benchmark_columns(tmp_path: Path):
+    db = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db)
+    connection.execute("CREATE TABLE sim_run (id INTEGER PRIMARY KEY)")
+    connection.execute("CREATE TABLE sim_nav_snapshot (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+
+    init_db(str(db))
+
+    connection = sqlite3.connect(db)
+    try:
+        run_columns = {row[1] for row in connection.execute("PRAGMA table_info(sim_run)")}
+        nav_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(sim_nav_snapshot)")
+        }
+    finally:
+        connection.close()
+    assert "benchmark" in run_columns
+    assert "benchmark_nav" in nav_columns
 
 
 def test_mock_client_hides_metrics_until_estimated_filing_date(tmp_path: Path):
@@ -163,6 +191,46 @@ def test_cache_api_keeps_missing_yahoo_surprise_neutral(tmp_path: Path, monkeypa
         assert event.source == "yahoo"
 
 
+def test_cache_api_fetches_non_tradeable_benchmark_prices_only(tmp_path: Path, monkeypatch):
+    import app.backend.routes.dashboard as dashboard
+    import v2.data.yfinance_client as yahoo_module
+
+    calls = {"prices": [], "metrics": [], "earnings": []}
+
+    class FakeYahoo:
+        def get_prices(self, ticker, start_date, end_date):
+            calls["prices"].append(ticker)
+            return [Price(open=10, high=10, low=10, close=10, volume=1, time="2025-01-02")]
+
+        def get_financial_metrics(self, ticker, end_date, limit=40):
+            calls["metrics"].append(ticker)
+            return []
+
+        def get_earnings_history(self, ticker, limit=40):
+            calls["earnings"].append(ticker)
+            return []
+
+        def close(self):
+            pass
+
+    db = tmp_path / "benchmark-cache.db"
+    monkeypatch.setattr(dashboard, "_DB_PATH", str(db))
+    monkeypatch.setattr(yahoo_module, "YFinanceClient", FakeYahoo)
+    result = dashboard.cache_fetch(dashboard.CacheFetchRequest(
+        tickers=["AAA"], benchmark="spy",
+        start_date="2025-01-01", end_date="2025-01-02",
+    ))
+
+    assert calls == {
+        "prices": ["AAA", "SPY"], "metrics": ["AAA"], "earnings": ["AAA"],
+    }
+    assert result["benchmark"] == {"ticker": "SPY", "prices": 1, "error": None}
+    with get_session(str(db)) as session:
+        assert session.query(PriceCache).filter_by(ticker="SPY").count() == 1
+        assert session.query(MetricsCache).filter_by(ticker="SPY").count() == 0
+        assert session.query(EarningsCache).filter_by(ticker="SPY").count() == 0
+
+
 class _BullishModel(AlphaModel):
     @property
     def name(self) -> str:
@@ -203,6 +271,10 @@ capital: 1000
                 ticker="AAA", date=day, open=open_, high=close,
                 low=open_, close=close, volume=100,
             ))
+            session.add(PriceCache(
+                ticker="SPY", date=day, open=100, high=102,
+                low=99, close=100 + (int(day[-2:]) - 10), volume=100,
+            ))
         for index, report_period in enumerate(("2022-09-30", "2022-12-31", "2023-03-31", "2023-06-30")):
             metric = FinancialMetrics(
                 ticker="AAA", report_period=report_period, period="ttm",
@@ -222,7 +294,8 @@ capital: 1000
 
     sim_id = SimRunner.create(
         tickers=["AAA"], start_date="2024-01-10", end_date="2024-01-12",
-        initial_capital=1000, db_path=str(db), fund_spec_path=str(spec_path),
+        initial_capital=1000, benchmark="SPY",
+        db_path=str(db), fund_spec_path=str(spec_path),
     )
     runner = SimRunner._get(sim_id)
     assert runner is not None
@@ -238,7 +311,19 @@ capital: 1000
         assert trades[0].price == 12
         assert navs[-1].cycle_date == "2024-01-12"
         assert navs[-1].nav > 1000
+        assert navs[0].benchmark_nav == 1000
+        assert navs[-1].benchmark_nav == pytest.approx(1020)
+        assert all(trade.ticker != "SPY" for trade in trades)
         assert session.execute(select(TradeLog)).scalars().all() == []
+
+    result = get_sim_result(sim_id, str(db))
+    assert result is not None
+    assert result["benchmark"] == "SPY"
+    assert result["benchmark_return_pct"] == pytest.approx(2.0)
+    assert result["excess_return_pct"] == pytest.approx(
+        result["total_return_pct"] - 2.0
+    )
+    assert result["nav_curve"][-1]["benchmark_nav"] == pytest.approx(1020)
 
 
 def test_sim_api_requires_confirmation_for_cold_cache_upper_bound(tmp_path: Path, monkeypatch):
@@ -253,6 +338,10 @@ def test_sim_api_requires_confirmation_for_cold_cache_upper_bound(tmp_path: Path
             session.add(PriceCache(
                 ticker="AAA", date=day, open=10, high=11,
                 low=9, close=10, volume=100,
+            ))
+            session.add(PriceCache(
+                ticker="SPY", date=day, open=100, high=101,
+                low=99, close=100, volume=100,
             ))
         filing_dates = [
             "2023-01-01", "2023-04-01", "2023-07-01", "2023-10-01",
@@ -294,6 +383,7 @@ def test_preflight_always_exposes_call_estimate(tmp_path: Path, monkeypatch):
     with get_session(str(db)) as session:
         for day in ("2025-01-02", "2025-01-03"):
             session.add(PriceCache(ticker="AAA", date=day, open=10, high=11, low=9, close=10, volume=1))
+            session.add(PriceCache(ticker="SPY", date=day, open=100, high=101, low=99, close=100, volume=1))
         for index, filing_date in enumerate(("2023-01-01", "2023-04-01", "2023-07-01", "2023-10-01")):
             report_period = f"2022-{index + 1:02d}-01"
             metric = FinancialMetrics(ticker="AAA", report_period=report_period, period="ttm")
@@ -309,8 +399,57 @@ def test_preflight_always_exposes_call_estimate(tmp_path: Path, monkeypatch):
     result = dashboard.sim_preflight(request)
     assert result["estimated_llm_calls"] == 3
     assert result["trading_days"] == 2
+    assert result["benchmark"] == "SPY"
     assert result["model"] == "test-model"
     assert "PEAD disabled" in " ".join(result["warnings"])
+
+
+def test_preflight_requires_benchmark_cache(tmp_path: Path, monkeypatch):
+    import app.backend.routes.dashboard as dashboard
+
+    db = tmp_path / "missing-benchmark.db"
+    monkeypatch.setattr(dashboard, "_DB_PATH", str(db))
+    with get_session(str(db)) as session:
+        session.add(PriceCache(
+            ticker="AAA", date="2025-01-02", open=10, high=11,
+            low=9, close=10, volume=1,
+        ))
+        session.commit()
+
+    request = dashboard.SimRunRequest(
+        tickers=["AAA"], benchmark="QQQ",
+        start_date="2025-01-01", end_date="2025-01-03",
+        initial_capital=1000,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        dashboard.sim_preflight(request)
+    assert exc_info.value.status_code == 422
+    assert "fetch benchmark prices" in " ".join(exc_info.value.detail["errors"])
+
+
+def test_old_simulation_result_keeps_benchmark_fields_null(tmp_path: Path):
+    db = tmp_path / "old-result.db"
+    with get_session(str(db)) as session:
+        run = SimRun(
+            name="legacy", tickers=json.dumps(["AAA"]), benchmark=None,
+            start_date="2024-01-01", end_date="2024-01-02",
+            initial_capital=1000, final_nav=1000, status="completed", total_days=1,
+        )
+        session.add(run)
+        session.flush()
+        session.add(SimNavSnapshot(
+            sim_run_id=run.id, cycle_date="2024-01-02", nav=1000,
+            cash=1000, equity=0, benchmark_nav=None,
+        ))
+        session.commit()
+        sim_id = run.id
+
+    result = get_sim_result(sim_id, str(db))
+    assert result is not None
+    assert result["benchmark"] is None
+    assert result["benchmark_return_pct"] is None
+    assert result["excess_return_pct"] is None
+    assert result["nav_curve"][0]["benchmark_nav"] is None
 
 
 def test_cache_api_upserts_prices_metrics_and_earnings(tmp_path: Path, monkeypatch):

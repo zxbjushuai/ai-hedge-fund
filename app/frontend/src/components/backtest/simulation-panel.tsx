@@ -11,8 +11,12 @@ import { SimResults } from './sim-results';
 const dateDaysAgo = (days: number) =>
   new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
+
 export function SimulationPanel() {
   const [tickers, setTickers] = useState('AAPL,MSFT');
+  const [benchmark, setBenchmark] = useState('SPY');
   const [startDate, setStartDate] = useState(() => dateDaysAgo(45));
   const [endDate, setEndDate] = useState(() => dateDaysAgo(1));
   const [capital, setCapital] = useState('100000');
@@ -46,6 +50,7 @@ export function SimulationPanel() {
     try {
       const request = {
         tickers: list,
+        benchmark: benchmark.trim().toUpperCase() || 'SPY',
         start_date: startDate,
         end_date: endDate,
         initial_capital: parseFloat(capital) || 100000,
@@ -59,6 +64,7 @@ export function SimulationPanel() {
         `Estimated model API calls: ${preflight.estimated_llm_calls}\n` +
         `Provider: ${preflight.provider}\n` +
         `Model: ${preflight.model}\n` +
+        `Benchmark: ${preflight.benchmark}\n` +
         `Trading days: ${preflight.trading_days}\n` +
         `Strategies: ${preflight.enabled_models.join(', ') || 'none'}\n\n` +
         `This is a cold-cache upper bound; cached prompts reduce actual calls.` +
@@ -75,8 +81,8 @@ export function SimulationPanel() {
       });
       setSimId(res.sim_id);
       setMessage(`Simulation running (up to ${preflight.estimated_llm_calls} model API calls)...`);
-    } catch (e: any) {
-      setMessage('Failed: ' + e.message);
+    } catch (error: unknown) {
+      setMessage('Failed: ' + errorMessage(error));
       setRunning(false);
     }
   };
@@ -112,8 +118,8 @@ export function SimulationPanel() {
       const result = await simulationApi.getSimResult(id);
       setResults(result);
       setMessage('');
-    } catch (e: any) {
-      setMessage('Failed to load result: ' + e.message);
+    } catch (error: unknown) {
+      setMessage('Failed to load result: ' + errorMessage(error));
     }
   };
 
@@ -126,10 +132,14 @@ export function SimulationPanel() {
           <CardTitle>Run Simulation</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             <div>
               <label className="text-sm text-muted-foreground mb-1 block">Tickers (from cache)</label>
               <Input value={tickers} onChange={e => setTickers(e.target.value)} placeholder="AAPL,MSFT" />
+            </div>
+            <div>
+              <label className="text-sm text-muted-foreground mb-1 block">Benchmark</label>
+              <Input value={benchmark} onChange={e => setBenchmark(e.target.value)} placeholder="SPY" />
             </div>
             <div>
               <label className="text-sm text-muted-foreground mb-1 block">Start Date</label>
@@ -206,6 +216,7 @@ export function SimulationPanel() {
                     </span>
                     <div className="text-xs text-muted-foreground mt-0.5">
                       {run.tickers.join(', ')} | {run.start_date} ~ {run.end_date} |
+                      {' '}Benchmark: {run.benchmark || 'N/A'} |
                       Capital: ${run.initial_capital.toLocaleString()}
                       {run.final_nav != null && <> | Final NAV: ${run.final_nav.toLocaleString()}</>}
                     </div>

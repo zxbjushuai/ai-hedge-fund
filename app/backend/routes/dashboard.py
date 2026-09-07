@@ -22,6 +22,7 @@ _DB_PATH = os.environ.get("FUND_DB_PATH", "fund.db")
 
 class CacheFetchRequest(BaseModel):
     tickers: list[str] = Field(min_length=1, max_length=50)
+    benchmark: str = "SPY"
     start_date: date
     end_date: date
 
@@ -33,6 +34,15 @@ class CacheFetchRequest(BaseModel):
         if any(not re.fullmatch(r"[A-Z0-9.\-]{1,10}", v) for v in cleaned):
             raise ValueError("invalid ticker")
         return list(dict.fromkeys(cleaned))
+
+    @field_validator("benchmark")
+    @classmethod
+    def valid_benchmark(cls, value):
+        import re
+        cleaned = value.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9.\-]{1,10}", cleaned):
+            raise ValueError("invalid benchmark")
+        return cleaned
 
     @model_validator(mode="after")
     def valid_range(self):
@@ -166,7 +176,8 @@ def cache_fetch(data: CacheFetchRequest):
 
     Body: {"tickers": ["AAPL"], "start_date": "2024-01-01", "end_date": "2024-12-31"}
     """
-    tickers, start_date, end_date = data.tickers, data.start_date.isoformat(), data.end_date.isoformat()
+    tickers, benchmark = data.tickers, data.benchmark
+    start_date, end_date = data.start_date.isoformat(), data.end_date.isoformat()
 
     from v2.data.yfinance_client import YFinanceClient
     from v2.data.earnings import (
@@ -179,6 +190,30 @@ def cache_fetch(data: CacheFetchRequest):
     init_db(_DB_PATH)
     results = {}
 
+    def fetch_prices(ticker, session):
+        prices = client.get_prices(ticker, start_date, end_date)
+        for price in prices:
+            date_str = price.time[:10] if price.time and len(price.time) >= 10 else ""
+            if not date_str:
+                continue
+            existing = session.query(PriceCache).filter(
+                PriceCache.ticker == ticker, PriceCache.date == date_str
+            ).first()
+            if existing:
+                existing.open = price.open
+                existing.high = price.high
+                existing.low = price.low
+                existing.close = price.close
+                existing.volume = price.volume
+            else:
+                session.add(PriceCache(
+                    ticker=ticker, date=date_str,
+                    open=price.open, high=price.high, low=price.low,
+                    close=price.close, volume=price.volume,
+                ))
+        session.commit()
+        return len(prices)
+
     try:
         for ticker in tickers:
             t = ticker.upper().strip()
@@ -188,29 +223,8 @@ def cache_fetch(data: CacheFetchRequest):
             session = get_session(_DB_PATH)
 
             try:
-                prices = client.get_prices(t, start_date, end_date)
-                for p in prices:
-                    date_str = p.time[:10] if p.time and len(p.time) >= 10 else ""
-                    if not date_str:
-                        continue
-                    existing = session.query(PriceCache).filter(
-                        PriceCache.ticker == t, PriceCache.date == date_str
-                    ).first()
-                    if existing:
-                        existing.open = p.open
-                        existing.high = p.high
-                        existing.low = p.low
-                        existing.close = p.close
-                        existing.volume = p.volume
-                    else:
-                        session.add(PriceCache(
-                            ticker=t, date=date_str,
-                            open=p.open, high=p.high, low=p.low, close=p.close,
-                            volume=p.volume,
-                        ))
-                session.commit()
-                ticker_results["prices"] = len(prices)
-                if not prices:
+                ticker_results["prices"] = fetch_prices(t, session)
+                if not ticker_results["prices"]:
                     ticker_results["error"] = "prices: Yahoo returned no data"
             except Exception as e:
                 session.rollback()
@@ -288,7 +302,27 @@ def cache_fetch(data: CacheFetchRequest):
 
             results[t] = ticker_results
 
-        return {"results": results}
+        benchmark_result = None
+        if benchmark not in tickers:
+            session = get_session(_DB_PATH)
+            try:
+                try:
+                    count = fetch_prices(benchmark, session)
+                    benchmark_result = {
+                        "ticker": benchmark,
+                        "prices": count,
+                        "error": None if count else "prices: Yahoo returned no data",
+                    }
+                except Exception as exc:
+                    session.rollback()
+                    benchmark_result = {
+                        "ticker": benchmark, "prices": 0,
+                        "error": f"prices: {exc}",
+                    }
+            finally:
+                session.close()
+
+        return {"results": results, "benchmark": benchmark_result}
     finally:
         client.close()
 
@@ -392,10 +426,12 @@ def _simulation_preflight(data: SimRunRequest) -> dict:
 
     tickers = data.tickers
     start_date, end_date = data.start_date.isoformat(), data.end_date.isoformat()
+    benchmark = data.benchmark
     spec = load_spec(_fund_path())
-    spec.universe = tickers
     require_earnings = any(model.name == "pead" for strategy in spec.strategies for model in strategy.models)
-    errors, warnings = validate_cached_data(_DB_PATH, tickers, start_date, end_date, require_earnings)
+    errors, warnings = validate_cached_data(
+        _DB_PATH, tickers, benchmark, start_date, end_date, require_earnings,
+    )
     if errors:
         raise HTTPException(status_code=422, detail={
             "message": "simulation data preflight failed", "errors": errors,
@@ -411,7 +447,7 @@ def _simulation_preflight(data: SimRunRequest) -> dict:
     provider = "none"
     model_name = "none"
     estimate = 0
-    trading_days = _trading_days(_DB_PATH, tickers, start_date, end_date)
+    trading_days = _trading_days(_DB_PATH, benchmark, start_date, end_date)
     if persona_names:
         from v2.llm import get_llm
         llm = get_llm()
@@ -424,13 +460,14 @@ def _simulation_preflight(data: SimRunRequest) -> dict:
         "estimate_kind": "cold_cache_upper_bound",
         "provider": provider,
         "model": model_name,
+        "benchmark": benchmark,
         "trading_days": len(trading_days),
         "enabled_models": [model.name for strategy in spec.strategies for model in strategy.models],
         "warnings": warnings,
     }
     logger.info(
-        "simulation preflight: tickers=%s range=%s..%s calls=%d provider=%s model=%s warnings=%s",
-        tickers, start_date, end_date, estimate, provider, model_name, warnings,
+        "simulation preflight: tickers=%s benchmark=%s range=%s..%s calls=%d provider=%s model=%s warnings=%s",
+        tickers, benchmark, start_date, end_date, estimate, provider, model_name, warnings,
     )
     return result
 
@@ -469,6 +506,7 @@ def sim_run(data: SimRunRequest):
             start_date=start_date,
             end_date=end_date,
             initial_capital=capital,
+            benchmark=data.benchmark,
             db_path=_DB_PATH,
             fund_spec_path=_fund_path(),
             name=name,

@@ -10,11 +10,15 @@ import { useEffect, useState, useCallback } from 'react';
 const dateDaysAgo = (days: number) =>
   new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
+
 export function CachePanel() {
   const [cache, setCache] = useState<Record<string, CacheItem>>({});
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [tickers, setTickers] = useState('AAPL,MSFT');
+  const [benchmark, setBenchmark] = useState('SPY');
   const [startDate, setStartDate] = useState(() => dateDaysAgo(365));
   const [endDate, setEndDate] = useState(() => dateDaysAgo(1));
   const [message, setMessage] = useState('');
@@ -24,8 +28,8 @@ export function CachePanel() {
     try {
       const data = await simulationApi.listCache();
       setCache(data.cached || {});
-    } catch (e: any) {
-      setMessage('Failed to load cache: ' + e.message);
+    } catch (error: unknown) {
+      setMessage('Failed to load cache: ' + errorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -41,6 +45,7 @@ export function CachePanel() {
     try {
       const res = await simulationApi.fetchCache({
         tickers: list,
+        benchmark: benchmark.trim().toUpperCase() || 'SPY',
         start_date: startDate,
         end_date: endDate,
       });
@@ -53,10 +58,16 @@ export function CachePanel() {
         if (r.error) parts.push(`error: ${r.error}`);
         msgs.push(`${t}: ${parts.join(', ') || 'no data'}`);
       }
+      if (res.benchmark) {
+        msgs.push(
+          `${res.benchmark.ticker} benchmark: ${res.benchmark.prices} prices` +
+          (res.benchmark.error ? `, error: ${res.benchmark.error}` : '')
+        );
+      }
       setMessage(msgs.join(' | '));
       await loadCache();
-    } catch (e: any) {
-      setMessage('Fetch failed: ' + e.message);
+    } catch (error: unknown) {
+      setMessage('Fetch failed: ' + errorMessage(error));
     } finally {
       setFetching(false);
     }
@@ -67,8 +78,8 @@ export function CachePanel() {
       await simulationApi.deleteCache(ticker);
       setMessage(`Deleted ${ticker}`);
       await loadCache();
-    } catch (e: any) {
-      setMessage('Delete failed: ' + e.message);
+    } catch (error: unknown) {
+      setMessage('Delete failed: ' + errorMessage(error));
     }
   };
 
@@ -81,13 +92,21 @@ export function CachePanel() {
           <CardTitle>Fetch Historical Data</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             <div>
               <label className="text-sm text-muted-foreground mb-1 block">Tickers</label>
               <Input
                 value={tickers}
                 onChange={e => setTickers(e.target.value)}
                 placeholder="AAPL,MSFT,TSLA"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-muted-foreground mb-1 block">Benchmark</label>
+              <Input
+                value={benchmark}
+                onChange={e => setBenchmark(e.target.value)}
+                placeholder="SPY"
               />
             </div>
             <div>

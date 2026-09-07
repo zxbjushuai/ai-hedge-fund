@@ -3,7 +3,9 @@
 import pytest
 from pydantic import ValidationError
 
-from v2.fund.spec import Fund, FundSpec, StrategySpec, load_spec, load_strategy
+from v2.fund.spec import (
+    Fund, FundSpec, StrategySpec, load_spec, load_strategy, normalize_universe,
+)
 
 MINIMAL = {
     "name": "test-fund",
@@ -57,6 +59,17 @@ def test_defaults_applied():
     assert spec.strategies[0].blend.gross_target == 1.0
     assert spec.strategies[0].weight == 1.0
     assert spec.capital == 100_000.0
+
+
+def test_universe_is_an_optional_compatibility_default():
+    spec = FundSpec(**{key: value for key, value in MINIMAL.items() if key != "universe"})
+    assert spec.universe is None
+
+
+def test_normalize_runtime_universe():
+    assert normalize_universe([" aapl ", "MSFT", "AAPL", ""]) == ["AAPL", "MSFT"]
+    with pytest.raises(ValueError, match="universe is empty"):
+        normalize_universe([" "])
 
 
 def test_typo_key_rejected():

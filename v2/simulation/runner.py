@@ -7,12 +7,12 @@ import logging
 import threading
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from v2.brokers import SimBroker
 from v2.data.mock_client import MockDataClient
-from v2.fund import Fund, load_spec
+from v2.fund import Fund, load_spec, normalize_universe
 from v2.persistence.database import get_session, init_db
 from v2.persistence.models import EarningsCache, MetricsCache, PriceCache, SimNavSnapshot, SimRun, SimTradeLog
 from v2.pipeline import run_cycle
@@ -23,19 +23,24 @@ _RUNNERS: dict[int, "SimRunner"] = {}
 _LOCK = threading.Lock()
 
 
-def _trading_days(db_path: str, tickers: list[str], start: str, end: str) -> list[str]:
-    """Actual market days for which every selected ticker has a cached bar."""
-    normalized = sorted({ticker.upper() for ticker in tickers})
+def _benchmark_closes(
+    db_path: str, benchmark: str, start: str, end: str,
+) -> dict[str, float]:
+    """Cached benchmark closes in date order for the requested window."""
     with get_session(db_path) as session:
-        return list(session.execute(
-            select(PriceCache.date).where(
-                PriceCache.ticker.in_(normalized),
+        rows = session.execute(
+            select(PriceCache.date, PriceCache.close).where(
+                PriceCache.ticker == benchmark.upper(),
                 PriceCache.date >= start, PriceCache.date <= end,
             )
-            .group_by(PriceCache.date)
-            .having(func.count(func.distinct(PriceCache.ticker)) == len(normalized))
             .order_by(PriceCache.date)
-        ).scalars())
+        ).all()
+    return {date: float(close) for date, close in rows if close > 0}
+
+
+def _trading_days(db_path: str, benchmark: str, start: str, end: str) -> list[str]:
+    """Actual market days defined exclusively by cached benchmark bars."""
+    return list(_benchmark_closes(db_path, benchmark, start, end))
 
 
 def estimate_filing_prompt_calls(
@@ -69,25 +74,43 @@ def estimate_filing_prompt_calls(
     return snapshot_count * len(persona_names)
 
 
-def validate_cached_data(db_path: str, tickers: list[str], start: str, end: str, require_earnings: bool = True) -> tuple[list[str], list[str]]:
+def validate_cached_data(
+    db_path: str,
+    tickers: list[str],
+    benchmark: str,
+    start: str,
+    end: str,
+    require_earnings: bool = True,
+) -> tuple[list[str], list[str]]:
     """Fail-fast point-in-time coverage validation shared by API and runner."""
-    days = _trading_days(db_path, tickers, start, end)
+    days = _trading_days(db_path, benchmark, start, end)
     errors: list[str] = []
     warnings: list[str] = []
     if len(days) < 2:
-        errors.append("cached prices must cover at least two trading days")
+        errors.append(
+            f"{benchmark}: benchmark cache must cover at least two trading days; "
+            "fetch benchmark prices in Data Cache first"
+        )
+    tickers_with_prices = 0
     with get_session(db_path) as session:
         for ticker in tickers:
             ticker_days = session.query(PriceCache).filter(
                 PriceCache.ticker == ticker, PriceCache.date >= start, PriceCache.date <= end
             ).count()
             if ticker_days == 0:
-                errors.append(f"{ticker}: no cached prices in requested range")
+                warnings.append(
+                    f"{ticker}: no cached prices in requested range; ticker will be skipped"
+                )
+            else:
+                tickers_with_prices += 1
             visible_metrics = session.query(MetricsCache).filter(
                 MetricsCache.ticker == ticker, MetricsCache.filing_date <= start
             ).count()
             if visible_metrics < 4:
-                errors.append(f"{ticker}: requires at least four visible quarterly metrics (found {visible_metrics})")
+                warnings.append(
+                    f"{ticker}: fewer than four visible quarterly metrics at start "
+                    f"(found {visible_metrics}); persona models will abstain until eligible"
+                )
             earnings = session.query(EarningsCache).filter(
                 EarningsCache.ticker == ticker,
                 EarningsCache.announcement_date <= end,
@@ -98,6 +121,8 @@ def validate_cached_data(db_path: str, tickers: list[str], start: str, end: str,
                 warnings.append(f"{ticker}: no actionable EPS surprise; PEAD will be disabled if unavailable for the whole universe")
             elif earnings == 0:
                 warnings.append(f"{ticker}: no earnings events; PEAD will be neutral")
+    if tickers_with_prices == 0:
+        errors.append("no universe ticker has cached prices in the requested range")
     return errors, warnings
 
 
@@ -133,6 +158,7 @@ class SimRunner:
         start_date: str,
         end_date: str,
         initial_capital: float,
+        benchmark: str,
         db_path: str,
         fund_spec_path: str,
         fee_rate: float = 0.001,
@@ -142,6 +168,7 @@ class SimRunner:
         self._start = start_date
         self._end = end_date
         self._capital = initial_capital
+        self._benchmark = benchmark
         self._db_path = db_path
         self._fund_spec_path = fund_spec_path
         self._fee_rate = fee_rate
@@ -160,19 +187,27 @@ class SimRunner:
         initial_capital: float,
         db_path: str,
         fund_spec_path: str,
+        benchmark: str = "SPY",
         name: str = "",
         fee_rate: float = 0.001,
     ) -> int:
         """Create a SimRun row and return its id. Call start() to run."""
         init_db(db_path)
+        tickers = normalize_universe(tickers)
+        benchmark = benchmark.strip().upper()
+        if not benchmark:
+            raise ValueError("benchmark is empty")
         session = get_session(db_path)
         try:
-            days = _trading_days(db_path, tickers, start_date, end_date)
+            days = _trading_days(db_path, benchmark, start_date, end_date)
             if len(days) < 2:
-                raise ValueError("cached prices must cover at least two trading days")
+                raise ValueError(
+                    f"{benchmark}: benchmark cache must cover at least two trading days"
+                )
             run = SimRun(
                 name=name,
                 tickers=json.dumps(tickers),
+                benchmark=benchmark,
                 start_date=start_date,
                 end_date=end_date,
                 initial_capital=initial_capital,
@@ -192,6 +227,7 @@ class SimRunner:
                 start_date=start_date,
                 end_date=end_date,
                 initial_capital=initial_capital,
+                benchmark=benchmark,
                 db_path=db_path,
                 fund_spec_path=fund_spec_path,
                 fee_rate=fee_rate,
@@ -216,11 +252,11 @@ class SimRunner:
         self._set_status("running")
         try:
             spec = load_spec(self._fund_spec_path)
-            spec.universe = self._tickers
-            spec.capital = self._capital
+            spec = spec.model_copy(deep=True, update={"capital": self._capital})
             require_earnings = any(m.name == "pead" for s in spec.strategies for m in s.models)
             errors, warnings = validate_cached_data(
-                self._db_path, self._tickers, self._start, self._end, require_earnings
+                self._db_path, self._tickers, self._benchmark,
+                self._start, self._end, require_earnings,
             )
             if errors:
                 raise ValueError("; ".join(errors))
@@ -236,11 +272,18 @@ class SimRunner:
                 run.warnings = json.dumps(warnings)
                 run.models = json.dumps(enabled_models)
                 session.commit()
-            days = _trading_days(self._db_path, self._tickers, self._start, self._end)
+            benchmark_closes = _benchmark_closes(
+                self._db_path, self._benchmark, self._start, self._end,
+            )
+            days = list(benchmark_closes)
             data_client = MockDataClient(self._db_path)
             broker = SimBroker(cash=self._capital, fee_rate=self._fee_rate)
             fund = Fund(spec)  # preserve model and prompt caches across the whole run
-            self._save_nav_snapshot(get_session(self._db_path), days[0], self._capital, self._capital, 0.0)
+            benchmark_base = benchmark_closes[days[0]]
+            self._save_nav_snapshot(
+                get_session(self._db_path), days[0], self._capital,
+                self._capital, 0.0, self._capital,
+            )
             self._set_progress(1)
             for i, day in enumerate(days[1:], start=1):
                 signal_day = days[i - 1]
@@ -248,6 +291,11 @@ class SimRunner:
                 record = run_cycle(
                     fund, signal_day, broker, data_client,
                     execution_prices=opens, valuation_prices=closes, execution_date=day,
+                    universe=self._tickers,
+                )
+
+                benchmark_nav = (
+                    self._capital * benchmark_closes[day] / benchmark_base
                 )
 
                 self._save_nav_snapshot(
@@ -256,6 +304,7 @@ class SimRunner:
                     nav=record.nav,
                     cash=record.cash,
                     equity=record.nav - record.cash,
+                    benchmark_nav=benchmark_nav,
                 )
 
                 if broker._last_trades:
@@ -297,7 +346,13 @@ class SimRunner:
             session.close()
 
     def _save_nav_snapshot(
-        self, session: Session, cycle_date: str, nav: float, cash: float, equity: float
+        self,
+        session: Session,
+        cycle_date: str,
+        nav: float,
+        cash: float,
+        equity: float,
+        benchmark_nav: float,
     ) -> None:
         try:
             snap = SimNavSnapshot(
@@ -306,6 +361,7 @@ class SimRunner:
                 nav=nav,
                 cash=cash,
                 equity=equity,
+                benchmark_nav=benchmark_nav,
             )
             session.add(snap)
             session.commit()
@@ -410,7 +466,13 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
         )
 
         nav_curve = [
-            {"date": n.cycle_date, "nav": n.nav, "cash": n.cash, "equity": n.equity}
+            {
+                "date": n.cycle_date,
+                "nav": n.nav,
+                "cash": n.cash,
+                "equity": n.equity,
+                "benchmark_nav": n.benchmark_nav,
+            }
             for n in nav_rows
         ]
 
@@ -431,6 +493,18 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
         initial_nav = run.initial_capital
         final_nav = run.final_nav or initial_nav
         total_return = (final_nav - initial_nav) / initial_nav
+        benchmark_values = [n.benchmark_nav for n in nav_rows]
+        has_benchmark_curve = bool(benchmark_values) and all(
+            value is not None for value in benchmark_values
+        )
+        benchmark_return = (
+            float(benchmark_values[-1]) / initial_nav - 1
+            if has_benchmark_curve else None
+        )
+        excess_return = (
+            total_return - benchmark_return
+            if benchmark_return is not None else None
+        )
 
         nav_values = [n.nav for n in nav_rows]
         peak = initial_nav
@@ -463,8 +537,17 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "start_date": run.start_date,
             "end_date": run.end_date,
             "initial_capital": run.initial_capital,
+            "benchmark": run.benchmark,
             "final_nav": round(final_nav, 2),
             "total_return_pct": round(total_return * 100, 2),
+            "benchmark_return_pct": (
+                round(benchmark_return * 100, 2)
+                if benchmark_return is not None else None
+            ),
+            "excess_return_pct": (
+                round(excess_return * 100, 2)
+                if excess_return is not None else None
+            ),
             "max_drawdown_pct": round(max_drawdown * 100, 2),
             "sharpe_ratio": round(sharpe, 4),
             "nav_curve": nav_curve,
@@ -498,6 +581,7 @@ def list_sim_runs(db_path: str) -> list[dict]:
                 "start_date": r.start_date,
                 "end_date": r.end_date,
                 "initial_capital": r.initial_capital,
+                "benchmark": r.benchmark,
                 "status": r.status,
                 "current_day": r.current_day,
                 "total_days": r.total_days,

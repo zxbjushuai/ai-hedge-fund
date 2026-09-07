@@ -1,6 +1,6 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-export type ApiError = Error & { status?: number; detail?: any };
+export type ApiError = Error & { status?: number; detail?: unknown };
 
 async function requireOk(res: Response): Promise<void> {
   if (res.ok) return;
@@ -27,16 +27,19 @@ export interface CacheListResponse {
 
 export interface FetchCacheRequest {
   tickers: string[];
+  benchmark?: string;
   start_date: string;
   end_date: string;
 }
 
 export interface FetchCacheResult {
   results: Record<string, { prices: number; metrics: number; earnings: number; error: string | null; warnings: string[] }>;
+  benchmark: { ticker: string; prices: number; error: string | null } | null;
 }
 
 export interface SimRunRequest {
   tickers: string[];
+  benchmark?: string;
   start_date: string;
   end_date: string;
   initial_capital: number;
@@ -49,6 +52,7 @@ export interface SimPreflight {
   estimate_kind: 'cold_cache_upper_bound';
   provider: string;
   model: string;
+  benchmark: string;
   trading_days: number;
   enabled_models: string[];
   warnings: string[];
@@ -71,6 +75,7 @@ export interface SimNavPoint {
   nav: number;
   cash: number;
   equity: number;
+  benchmark_nav: number | null;
 }
 
 export interface SimTrade {
@@ -91,8 +96,11 @@ export interface SimResult {
   start_date: string;
   end_date: string;
   initial_capital: number;
+  benchmark: string | null;
   final_nav: number;
   total_return_pct: number;
+  benchmark_return_pct: number | null;
+  excess_return_pct: number | null;
   max_drawdown_pct: number;
   sharpe_ratio: number;
   nav_curve: SimNavPoint[];
@@ -115,6 +123,7 @@ export interface SimRunSummary {
   start_date: string;
   end_date: string;
   initial_capital: number;
+  benchmark: string | null;
   status: string;
   current_day: number;
   total_days: number;

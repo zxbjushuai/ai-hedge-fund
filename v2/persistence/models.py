@@ -157,6 +157,7 @@ class SimRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     tickers: Mapped[str] = mapped_column(Text, nullable=False)
+    benchmark: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     start_date: Mapped[str] = mapped_column(String(10), nullable=False)
     end_date: Mapped[str] = mapped_column(String(10), nullable=False)
     initial_capital: Mapped[float] = mapped_column(Float, nullable=False)
@@ -211,6 +212,7 @@ class SimNavSnapshot(Base):
     nav: Mapped[float] = mapped_column(Float, nullable=False)
     cash: Mapped[float] = mapped_column(Float, nullable=False)
     equity: Mapped[float] = mapped_column(Float, nullable=False)
+    benchmark_nav: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     created_at: Mapped[str] = mapped_column(
         String(26), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat()
     )

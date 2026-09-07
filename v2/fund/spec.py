@@ -103,14 +103,20 @@ class FundSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    universe: list[str] = Field(min_length=1)
+    universe: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="optional compatibility default; run-time universe takes precedence",
+    )
     strategies: list[StrategySpec] = Field(min_length=1)
     risk: RiskLimits
     capital: float = Field(default=100_000.0, gt=0)
 
     @field_validator("universe")
     @classmethod
-    def _uppercase_unique(cls, tickers: list[str]) -> list[str]:
+    def _uppercase_unique(cls, tickers: list[str] | None) -> list[str] | None:
+        if tickers is None:
+            return None
         upper = [t.upper() for t in tickers]
         duplicates = {t for t in upper if upper.count(t) > 1}
         if duplicates:
@@ -125,6 +131,18 @@ class FundSpec(BaseModel):
         if duplicates:
             raise ValueError(f"duplicate strategy names: {sorted(duplicates)}")
         return strategies
+
+
+def normalize_universe(tickers: list[str]) -> list[str]:
+    """Upper-case, trim, and de-duplicate a run-time universe in input order."""
+    universe: list[str] = []
+    for ticker in tickers:
+        normalized = ticker.strip().upper()
+        if normalized and normalized not in universe:
+            universe.append(normalized)
+    if not universe:
+        raise ValueError("universe is empty - a run needs at least one ticker")
+    return universe
 
 
 def load_spec(path: str | Path) -> FundSpec:
