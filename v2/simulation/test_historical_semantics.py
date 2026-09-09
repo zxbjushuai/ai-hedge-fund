@@ -36,6 +36,23 @@ def test_sessions_are_isolated_by_normalized_database_path(tmp_path: Path):
         assert session.execute(select(PriceCache)).scalars().all() == []
 
 
+def test_dashboard_polling_releases_database_connections(tmp_path: Path, monkeypatch):
+    import app.backend.routes.dashboard as dashboard
+    import v2.persistence.database as database
+
+    db = tmp_path / "dashboard-polling.db"
+    monkeypatch.setattr(dashboard, "_DB_PATH", str(db))
+    for _ in range(20):
+        dashboard.get_summary()
+        dashboard.get_trades()
+        dashboard.get_positions()
+        dashboard.get_nav_history()
+
+    engine = database._engines[database._key(str(db))]
+    assert engine.pool.checkedout() == 0
+    assert dashboard.cache_list() == {"cached": {}}
+
+
 def test_trading_calendar_uses_benchmark_only_and_records_cycle_date(tmp_path: Path):
     db = tmp_path / "main.db"
     with get_session(str(db)) as session:
@@ -65,7 +82,7 @@ def test_earnings_cache_schema(tmp_path: Path):
         assert session.execute(select(EarningsCache)).scalar_one().surprise_pct == 100
 
 
-def test_additive_migration_adds_nullable_benchmark_columns(tmp_path: Path):
+def test_additive_migration_adds_nullable_benchmark_and_llm_columns(tmp_path: Path):
     db = tmp_path / "legacy.db"
     connection = sqlite3.connect(db)
     connection.execute("CREATE TABLE sim_run (id INTEGER PRIMARY KEY)")
@@ -84,6 +101,11 @@ def test_additive_migration_adds_nullable_benchmark_columns(tmp_path: Path):
     finally:
         connection.close()
     assert "benchmark" in run_columns
+    assert "llm_provider" in run_columns
+    assert "llm_model" in run_columns
+    assert "llm_connection_id" in run_columns
+    assert "llm_connection_name" in run_columns
+    assert "llm_base_url" in run_columns
     assert "benchmark_nav" in nav_columns
 
 
@@ -375,11 +397,13 @@ def test_sim_api_requires_confirmation_for_cold_cache_upper_bound(tmp_path: Path
 
 def test_preflight_always_exposes_call_estimate(tmp_path: Path, monkeypatch):
     import app.backend.routes.dashboard as dashboard
-    import v2.llm
 
     db = tmp_path / "preflight.db"
     monkeypatch.setattr(dashboard, "_DB_PATH", str(db))
-    monkeypatch.setattr(v2.llm, "get_llm", lambda: SimpleNamespace(model="test-model"))
+    monkeypatch.setattr(
+        dashboard, "_resolve_simulation_llm",
+        lambda data, required: SimpleNamespace(provider="openai", model="gpt-5.6"),
+    )
     with get_session(str(db)) as session:
         for day in ("2025-01-02", "2025-01-03"):
             session.add(PriceCache(ticker="AAA", date=day, open=10, high=11, low=9, close=10, volume=1))
@@ -394,14 +418,34 @@ def test_preflight_always_exposes_call_estimate(tmp_path: Path, monkeypatch):
         session.commit()
     request = dashboard.SimRunRequest(
         tickers=["AAA"], start_date="2025-01-01", end_date="2025-01-03",
-        initial_capital=1000,
+        initial_capital=1000, provider="openai", model="gpt-5.6",
     )
     result = dashboard.sim_preflight(request)
     assert result["estimated_llm_calls"] == 3
     assert result["trading_days"] == 2
     assert result["benchmark"] == "SPY"
-    assert result["model"] == "test-model"
+    assert result["provider"] == "openai"
+    assert result["model"] == "gpt-5.6"
     assert "PEAD disabled" in " ".join(result["warnings"])
+
+
+def test_llm_catalog_never_exposes_credential_names(monkeypatch):
+    import asyncio
+    import app.backend.routes.dashboard as dashboard
+    import app.backend.services.v2_llm_service as llm_service
+    import app.backend.services.ollama_service as ollama_service
+
+    class FakeOllamaService:
+        async def get_available_models(self):
+            return [{"display_name": "Local Test", "model_name": "local:test", "provider": "Ollama"}]
+
+    monkeypatch.setattr(llm_service, "credential_configured", lambda provider, db: provider == "ollama")
+    monkeypatch.setattr(ollama_service, "OllamaService", FakeOllamaService)
+    result = asyncio.run(dashboard.llm_models())
+    assert result["providers"]
+    assert all("credential_names" not in provider for provider in result["providers"])
+    assert next(provider for provider in result["providers"] if provider["id"] == "ollama")["credential_configured"] is True
+    assert next(provider for provider in result["providers"] if provider["id"] == "ollama")["models"][0]["model"] == "local:test"
 
 
 def test_preflight_requires_benchmark_cache(tmp_path: Path, monkeypatch):
@@ -447,11 +491,38 @@ def test_old_simulation_result_keeps_benchmark_fields_null(tmp_path: Path):
     result = get_sim_result(sim_id, str(db))
     assert result is not None
     assert result["benchmark"] is None
+    assert result["provider"] is None
+    assert result["model"] is None
+    assert result["llm_connection_id"] is None
+    assert result["llm_connection_name"] is None
+    assert result["llm_base_url"] is None
     assert result["benchmark_return_pct"] is None
     assert result["excess_return_pct"] is None
     assert result["nav_curve"][0]["benchmark_nav"] is None
 
 
+def test_sim_run_persists_managed_connection_snapshot(tmp_path: Path):
+    db = tmp_path / "connection-snapshot.db"
+    with get_session(str(db)) as session:
+        for day in ("2025-01-02", "2025-01-03"):
+            session.add(PriceCache(
+                ticker="SPY", date=day, open=100, high=101,
+                low=99, close=100, volume=1,
+            ))
+        session.commit()
+    llm = SimpleNamespace(provider="openai", model="gpt-private")
+    sim_id = SimRunner.create(
+        tickers=["AAA"], benchmark="SPY",
+        start_date="2025-01-01", end_date="2025-01-03",
+        initial_capital=1000, db_path=str(db), fund_spec_path="unused.yaml",
+        llm=llm, llm_connection_id=7, llm_connection_name="Company Proxy",
+        llm_base_url="https://proxy.example/v1",
+    )
+    with get_session(str(db)) as session:
+        run = session.get(SimRun, sim_id)
+        assert (run.llm_connection_id, run.llm_connection_name, run.llm_base_url) == (
+            7, "Company Proxy", "https://proxy.example/v1",
+        )
 def test_cache_api_upserts_prices_metrics_and_earnings(tmp_path: Path, monkeypatch):
     import app.backend.routes.dashboard as dashboard
     import v2.data.yfinance_client as yahoo_module
@@ -500,51 +571,42 @@ def test_cache_api_upserts_prices_metrics_and_earnings(tmp_path: Path, monkeypat
 
 
 def test_modelscope_provider_uses_openai_compatible_configuration(monkeypatch):
-    import openai
+    import langchain_openai
     from v2.llm.client import ModelScopeLLM
 
     captured = {}
 
-    class FakeCompletions:
-        def create(self, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(content='{"signal":"neutral"}')
-            )])
-
-    class FakeOpenAI:
+    class FakeChat:
         def __init__(self, **kwargs):
             captured.update(kwargs)
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+        def invoke(self, messages):
+            captured["messages"] = messages
+            return SimpleNamespace(content='{"signal":"neutral"}')
 
-    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChat)
     monkeypatch.setenv("MODELSCOPE_API_KEY", "test-token")
     monkeypatch.setenv("V2_LLM_BASE_URL", "https://api-inference.modelscope.cn/v1/")
     client = ModelScopeLLM(model="Qwen/Qwen3-4B")
     assert client.complete("system", "user") == '{"signal":"neutral"}'
     assert captured["base_url"] == "https://api-inference.modelscope.cn/v1/"
     assert captured["model"] == "Qwen/Qwen3-4B"
+    assert captured["extra_body"] == {"enable_thinking": False}
 
 
 def test_openrouter_provider_uses_free_router(monkeypatch):
-    import openai
+    import langchain_openai
     from v2.llm.client import OpenRouterLLM
 
     captured = {}
 
-    class FakeCompletions:
-        def create(self, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(content='{"signal":"neutral"}')
-            )])
-
-    class FakeOpenAI:
+    class FakeChat:
         def __init__(self, **kwargs):
             captured.update(kwargs)
-            self.chat = SimpleNamespace(completions=FakeCompletions())
+        def invoke(self, messages):
+            captured["messages"] = messages
+            return SimpleNamespace(content='{"signal":"neutral"}')
 
-    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChat)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-token")
     monkeypatch.delenv("V2_LLM_MODEL", raising=False)
     monkeypatch.delenv("V2_LLM_BASE_URL", raising=False)

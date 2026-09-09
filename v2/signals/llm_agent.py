@@ -60,7 +60,9 @@ class LLMAgent(AlphaModel):
 
         system = self.get_system_prompt()
         user = self.build_user_prompt(snapshot)
-        key = prompt_key(self.name, self._llm.model, system, user)
+        provider = getattr(self._llm, "provider", "unknown")
+        identity = getattr(self._llm, "identity", f"{provider}:{self._llm.model}")
+        key = prompt_key(self.name, identity, system, user)
 
         cached = self._cache.get(key)
         if cached is not None and "parsed" in cached:
@@ -74,7 +76,9 @@ class LLMAgent(AlphaModel):
 
         record = {
             "agent": self.name,
+            "provider": provider,
             "model": self._llm.model,
+            "model_identity": identity,
             "ticker": ticker,
             "as_of": date,
             "snapshot_hash": snapshot.content_hash,

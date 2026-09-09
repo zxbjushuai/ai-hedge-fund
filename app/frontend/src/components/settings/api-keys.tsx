@@ -25,13 +25,6 @@ const FINANCIAL_API_KEYS: ApiKey[] = [
 
 const LLM_API_KEYS: ApiKey[] = [
   {
-    key: 'ANTHROPIC_API_KEY',
-    label: 'Anthropic API',
-    description: 'For Claude models (claude-4-sonnet, claude-4.1-opus, etc.)',
-    url: 'https://anthropic.com/',
-    placeholder: 'your-anthropic-api-key'
-  },
-  {
     key: 'DEEPSEEK_API_KEY',
     label: 'DeepSeek API',
     description: 'For DeepSeek models (deepseek-chat, deepseek-reasoner, etc.)',
@@ -53,13 +46,6 @@ const LLM_API_KEYS: ApiKey[] = [
     placeholder: 'your-google-api-key'
   },
   {
-    key: 'OPENAI_API_KEY',
-    label: 'OpenAI API',
-    description: 'For OpenAI models (gpt-4o, gpt-4o-mini, etc.)',
-    url: 'https://platform.openai.com/',
-    placeholder: 'your-openai-api-key'
-  },
-  {
     key: 'MOONSHOT_API_KEY',
     label: 'Moonshot (Kimi) API',
     description: 'For Kimi / Moonshot models (kimi-k2, kimi-latest, moonshot-v1-*)',
@@ -72,6 +58,20 @@ const LLM_API_KEYS: ApiKey[] = [
     description: 'For OpenRouter models (gpt-4o, gpt-4o-mini, etc.)',
     url: 'https://openrouter.ai/',
     placeholder: 'your-openrouter-api-key'
+  },
+  {
+    key: 'MODELSCOPE_API_KEY',
+    label: 'ModelScope API',
+    description: 'For ModelScope-hosted Qwen and other inference models',
+    url: 'https://modelscope.cn/',
+    placeholder: 'your-modelscope-api-key'
+  },
+  {
+    key: 'XAI_API_KEY',
+    label: 'xAI API',
+    description: 'For Grok models',
+    url: 'https://x.ai/',
+    placeholder: 'your-xai-api-key'
   },
   {
     key: 'GIGACHAT_API_KEY',
@@ -101,7 +101,10 @@ export function ApiKeysSettings() {
       
       // Load actual key values for existing keys
       const keysData: Record<string, string> = {};
-      for (const summary of apiKeysSummary) {
+      const visibleProviders = new Set(
+        [...FINANCIAL_API_KEYS, ...LLM_API_KEYS].map(item => item.key)
+      );
+      for (const summary of apiKeysSummary.filter(item => visibleProviders.has(item.provider))) {
         try {
           const fullKey = await apiKeysService.getApiKey(summary.provider);
           keysData[summary.provider] = fullKey.key_value;
@@ -293,8 +296,8 @@ export function ApiKeysSettings() {
 
       {/* LLM API Keys */}
       {renderApiKeySection(
-        'Language Models',
-        'API keys for accessing various large language model providers.',
+        'Legacy Language Models',
+        'Legacy provider keys remain available here. Configure OpenAI and Anthropic under LLM Providers.',
         LLM_API_KEYS,
         <Key className="h-4 w-4" />
       )}
@@ -316,4 +319,4 @@ export function ApiKeysSettings() {
       </Card>
     </div>
   );
-} 
+}

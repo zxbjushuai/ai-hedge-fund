@@ -1,0 +1,16 @@
+[
+  {"display_name": "Opus 5", "model": "claude-opus-5", "provider": "anthropic"},
+  {"display_name": "Sonnet 5", "model": "claude-sonnet-5", "provider": "anthropic"},
+  {"display_name": "Fable 5.1", "model": "claude-fable-5-1", "provider": "anthropic"},
+  {"display_name": "DeepSeek V4 Pro", "model": "deepseek-v4-pro", "provider": "deepseek"},
+  {"display_name": "DeepSeek Chat", "model": "deepseek-chat", "provider": "deepseek"},
+  {"display_name": "GPT-5.6", "model": "gpt-5.6", "provider": "openai"},
+  {"display_name": "GPT-6 Astra", "model": "gpt-6-astra", "provider": "openai"},
+  {"display_name": "Gemini 3.1 Pro", "model": "gemini-3.1-pro-preview", "provider": "google"},
+  {"display_name": "Grok 4.3", "model": "grok-4.3", "provider": "xai"},
+  {"display_name": "Kimi K2.6", "model": "kimi-k2.6", "provider": "kimi"},
+  {"display_name": "Llama 3.3 70B", "model": "llama-3.3-70b-versatile", "provider": "groq"},
+  {"display_name": "Qwen3 4B", "model": "Qwen/Qwen3-4B", "provider": "modelscope"},
+  {"display_name": "OpenRouter Free", "model": "openrouter/free", "provider": "openrouter"},
+  {"display_name": "Llama 3.1 Local", "model": "llama3.1:latest", "provider": "ollama"}
+]

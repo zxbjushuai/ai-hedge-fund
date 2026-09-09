@@ -1,7 +1,6 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, JSON, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, JSON, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 from .connection import Base
-
 
 class HedgeFundFlow(Base):
     """Table to store React Flow configurations (nodes, edges, viewport)"""
@@ -112,4 +111,46 @@ class ApiKey(Base):
     last_used = Column(DateTime(timezone=True), nullable=True)  # Track usage
 
 
- 
+class LlmProviderConnection(Base):
+    """A named, server-side LLM connection used by v2 simulations."""
+
+    __tablename__ = "llm_provider_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False, unique=True, index=True)
+    provider_type = Column(String(20), nullable=False, index=True)
+    base_url = Column(String(500), nullable=False)
+    api_key = Column(Text, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)
+    last_test_status = Column(String(20), nullable=True)
+    last_error = Column(Text, nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class LlmProviderModel(Base):
+    """Cached or manually configured model belonging to one connection."""
+
+    __tablename__ = "llm_provider_models"
+
+    id = Column(Integer, primary_key=True, index=True)
+    connection_id = Column(
+        Integer,
+        ForeignKey("llm_provider_connections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    model_id = Column(String(200), nullable=False)
+    display_name = Column(String(200), nullable=False)
+    source = Column(String(20), nullable=False, default="remote")
+    enabled = Column(Boolean, nullable=False, default=False)
+    available = Column(Boolean, nullable=False, default=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("connection_id", "model_id", name="uq_llm_provider_model"),
+    )

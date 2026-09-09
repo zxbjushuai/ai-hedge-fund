@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from v2.brokers import SimBroker
 from v2.data.mock_client import MockDataClient
 from v2.fund import Fund, load_spec, normalize_universe
+from v2.llm import LLMClient
 from v2.persistence.database import get_session, init_db
 from v2.persistence.models import EarningsCache, MetricsCache, PriceCache, SimNavSnapshot, SimRun, SimTradeLog
 from v2.pipeline import run_cycle
@@ -161,6 +162,7 @@ class SimRunner:
         benchmark: str,
         db_path: str,
         fund_spec_path: str,
+        llm: LLMClient | None = None,
         fee_rate: float = 0.001,
     ) -> None:
         self._id = sim_run_id
@@ -171,6 +173,7 @@ class SimRunner:
         self._benchmark = benchmark
         self._db_path = db_path
         self._fund_spec_path = fund_spec_path
+        self._llm = llm
         self._fee_rate = fee_rate
         self._thread: threading.Thread | None = None
 
@@ -190,6 +193,12 @@ class SimRunner:
         benchmark: str = "SPY",
         name: str = "",
         fee_rate: float = 0.001,
+        llm: LLMClient | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        llm_connection_id: int | None = None,
+        llm_connection_name: str | None = None,
+        llm_base_url: str | None = None,
     ) -> int:
         """Create a SimRun row and return its id. Call start() to run."""
         init_db(db_path)
@@ -197,6 +206,12 @@ class SimRunner:
         benchmark = benchmark.strip().upper()
         if not benchmark:
             raise ValueError("benchmark is empty")
+        if llm is not None:
+            if llm_provider is not None and llm_provider != llm.provider:
+                raise ValueError("persisted LLM provider does not match the injected client")
+            if llm_model is not None and llm_model != llm.model:
+                raise ValueError("persisted LLM model does not match the injected client")
+            llm_provider, llm_model = llm.provider, llm.model
         session = get_session(db_path)
         try:
             days = _trading_days(db_path, benchmark, start_date, end_date)
@@ -208,6 +223,11 @@ class SimRunner:
                 name=name,
                 tickers=json.dumps(tickers),
                 benchmark=benchmark,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                llm_connection_id=llm_connection_id,
+                llm_connection_name=llm_connection_name,
+                llm_base_url=llm_base_url,
                 start_date=start_date,
                 end_date=end_date,
                 initial_capital=initial_capital,
@@ -230,6 +250,7 @@ class SimRunner:
                 benchmark=benchmark,
                 db_path=db_path,
                 fund_spec_path=fund_spec_path,
+                llm=llm,
                 fee_rate=fee_rate,
             )
             _RUNNERS[sim_id] = runner
@@ -263,8 +284,9 @@ class SimRunner:
             warnings.extend(disable_unavailable_models(spec, self._db_path, self._tickers, self._end))
             enabled_models = [m.name for s in spec.strategies for m in s.models]
             logger.info(
-                "sim %d started: tickers=%s range=%s..%s capital=%.2f models=%s warnings=%s",
+                "sim %d started: tickers=%s range=%s..%s capital=%.2f llm=%s models=%s warnings=%s",
                 self._id, self._tickers, self._start, self._end, self._capital,
+                self._llm.identity if self._llm is not None else "none",
                 enabled_models, warnings,
             )
             with get_session(self._db_path) as session:
@@ -278,7 +300,7 @@ class SimRunner:
             days = list(benchmark_closes)
             data_client = MockDataClient(self._db_path)
             broker = SimBroker(cash=self._capital, fee_rate=self._fee_rate)
-            fund = Fund(spec)  # preserve model and prompt caches across the whole run
+            fund = Fund(spec, llm=self._llm)  # one immutable client for this run
             benchmark_base = benchmark_closes[days[0]]
             self._save_nav_snapshot(
                 get_session(self._db_path), days[0], self._capital,
@@ -428,6 +450,11 @@ def get_sim_status(sim_id: int, db_path: str) -> dict | None:
             "current_day": run.current_day,
             "total_days": run.total_days,
             "final_nav": run.final_nav,
+            "provider": run.llm_provider,
+            "model": run.llm_model,
+            "llm_connection_id": run.llm_connection_id,
+            "llm_connection_name": run.llm_connection_name,
+            "llm_base_url": run.llm_base_url,
             "error_message": run.error_message,
             "completed_at": run.completed_at,
             "warnings": json.loads(run.warnings or "[]"),
@@ -538,6 +565,11 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "end_date": run.end_date,
             "initial_capital": run.initial_capital,
             "benchmark": run.benchmark,
+            "provider": run.llm_provider,
+            "model": run.llm_model,
+            "llm_connection_id": run.llm_connection_id,
+            "llm_connection_name": run.llm_connection_name,
+            "llm_base_url": run.llm_base_url,
             "final_nav": round(final_nav, 2),
             "total_return_pct": round(total_return * 100, 2),
             "benchmark_return_pct": (
@@ -582,6 +614,11 @@ def list_sim_runs(db_path: str) -> list[dict]:
                 "end_date": r.end_date,
                 "initial_capital": r.initial_capital,
                 "benchmark": r.benchmark,
+                "provider": r.llm_provider,
+                "model": r.llm_model,
+                "llm_connection_id": r.llm_connection_id,
+                "llm_connection_name": r.llm_connection_name,
+                "llm_base_url": r.llm_base_url,
                 "status": r.status,
                 "current_day": r.current_day,
                 "total_days": r.total_days,

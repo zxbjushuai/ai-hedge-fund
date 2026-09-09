@@ -5,10 +5,17 @@ from __future__ import annotations
 import json
 import os
 import logging
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, timedelta
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Iterator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.backend.database import get_db
 
 from v2.persistence.database import get_session, init_db
 from v2.persistence.repository import LedgerRepository
@@ -57,6 +64,72 @@ class SimRunRequest(CacheFetchRequest):
     initial_capital: float = Field(gt=0)
     name: str = Field(default="", max_length=100)
     confirm_cost: bool = False
+    provider: str | None = Field(default=None, min_length=1, max_length=32)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    llm_connection_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def complete_llm_selection(self):
+        if self.llm_connection_id is not None:
+            if self.model is None:
+                raise ValueError("model is required with llm_connection_id")
+            if self.provider is not None:
+                raise ValueError("provider cannot be combined with llm_connection_id")
+        elif (self.provider is None) != (self.model is None):
+            raise ValueError("provider and model must be supplied together")
+        return self
+
+
+class LlmProviderCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    provider_type: str
+    base_url: str = Field(default="", max_length=500)
+    api_key: SecretStr
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def strip_required(cls, value: str):
+        value = value.strip()
+        if not value:
+            raise ValueError("value cannot be empty")
+        return value
+
+
+class LlmProviderUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: SecretStr | None = None
+    enabled: bool | None = None
+
+
+class LlmModelCreateRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=200)
+    display_name: str | None = Field(default=None, max_length=200)
+    enabled: bool = True
+
+    @field_validator("model_id")
+    @classmethod
+    def strip_model_id(cls, value: str):
+        value = value.strip()
+        if not value:
+            raise ValueError("model_id cannot be empty")
+        return value
+
+
+class LlmModelUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=200)
+    enabled: bool | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedSimulationLlm:
+    client: object
+    provider: str
+    model: str
+    connection_id: int | None = None
+    connection_name: str | None = None
+    base_url: str | None = None
 
 
 def set_daemon(daemon) -> None:
@@ -64,18 +137,22 @@ def set_daemon(daemon) -> None:
     _DAEMON = daemon
 
 
-def _get_repo() -> LedgerRepository:
+@contextmanager
+def _get_repo() -> Iterator[LedgerRepository]:
     init_db(_DB_PATH)
     session = get_session(_DB_PATH)
-    return LedgerRepository(session)
+    try:
+        yield LedgerRepository(session)
+    finally:
+        session.close()
 
 
 @router.get("/summary")
 def get_summary():
     """Return fund-level summary: NAV, cash, equity, P&L, position count."""
     try:
-        repo = _get_repo()
-        return repo.get_summary()
+        with _get_repo() as repo:
+            return repo.get_summary()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -84,25 +161,25 @@ def get_summary():
 def get_trades(ticker: str = None, limit: int = 100, offset: int = 0):
     """Return recent trade log entries, optionally filtered by ticker."""
     try:
-        repo = _get_repo()
-        trades = repo.get_trades(ticker=ticker, limit=limit, offset=offset)
-        return {
-            "trades": [
-                {
-                    "id": t.id,
-                    "ticker": t.ticker,
-                    "side": t.side,
-                    "quantity": t.quantity,
-                    "price": t.price,
-                    "fee": t.fee,
-                    "total_amount": t.total_amount,
-                    "cycle_date": t.cycle_date,
-                    "created_at": t.created_at,
-                }
-                for t in trades
-            ],
-            "total": len(trades),
-        }
+        with _get_repo() as repo:
+            trades = repo.get_trades(ticker=ticker, limit=limit, offset=offset)
+            return {
+                "trades": [
+                    {
+                        "id": t.id,
+                        "ticker": t.ticker,
+                        "side": t.side,
+                        "quantity": t.quantity,
+                        "price": t.price,
+                        "fee": t.fee,
+                        "total_amount": t.total_amount,
+                        "cycle_date": t.cycle_date,
+                        "created_at": t.created_at,
+                    }
+                    for t in trades
+                ],
+                "total": len(trades),
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -111,8 +188,8 @@ def get_trades(ticker: str = None, limit: int = 100, offset: int = 0):
 def get_positions():
     """Return current portfolio positions derived from trade_log."""
     try:
-        repo = _get_repo()
-        return {"positions": repo.get_current_positions()}
+        with _get_repo() as repo:
+            return {"positions": repo.get_current_positions()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -121,19 +198,19 @@ def get_positions():
 def get_nav_history(limit: int = 365):
     """Return NAV history for P&L charting."""
     try:
-        repo = _get_repo()
-        snapshots = repo.get_nav_history(limit=limit)
-        return {
-            "history": [
-                {
-                    "date": s.cycle_date,
-                    "nav": s.nav,
-                    "cash": s.cash,
-                    "equity": s.equity,
-                }
-                for s in reversed(snapshots)
-            ]
-        }
+        with _get_repo() as repo:
+            snapshots = repo.get_nav_history(limit=limit)
+            return {
+                "history": [
+                    {
+                        "date": s.cycle_date,
+                        "nav": s.nav,
+                        "cash": s.cash,
+                        "equity": s.equity,
+                    }
+                    for s in reversed(snapshots)
+                ]
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -405,6 +482,280 @@ def cache_delete(ticker: str):
 # ---------------------------------------------------------------------------
 
 
+@router.get("/llm/providers")
+def llm_provider_connections(db: Session = Depends(get_db)):
+    from app.backend.database.models import LlmProviderConnection
+    from app.backend.services.llm_provider_service import connection_dict, ensure_provider_tables
+
+    ensure_provider_tables(db)
+    rows = db.query(LlmProviderConnection).order_by(LlmProviderConnection.name).all()
+    return {"providers": [connection_dict(row) for row in rows]}
+
+
+@router.post("/llm/providers", status_code=201)
+def create_llm_provider(data: LlmProviderCreateRequest, db: Session = Depends(get_db)):
+    from app.backend.database.models import LlmProviderConnection
+    from app.backend.services.llm_provider_service import (
+        connection_dict, ensure_provider_tables, normalize_base_url,
+    )
+
+    ensure_provider_tables(db)
+    provider = data.provider_type.strip().lower()
+    secret = data.api_key.get_secret_value().strip()
+    if not secret:
+        raise HTTPException(status_code=422, detail="api_key cannot be empty")
+    try:
+        base_url = normalize_base_url(data.base_url, provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if db.query(LlmProviderConnection).filter(LlmProviderConnection.name == data.name).first():
+        raise HTTPException(status_code=409, detail="connection name already exists")
+    row = LlmProviderConnection(
+        name=data.name,
+        provider_type=provider,
+        base_url=base_url,
+        api_key=secret,
+        enabled=data.enabled,
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="connection name already exists") from exc
+    db.refresh(row)
+    return connection_dict(row)
+
+
+@router.patch("/llm/providers/{connection_id}")
+def update_llm_provider(
+    connection_id: int,
+    data: LlmProviderUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    from app.backend.database.models import LlmProviderConnection, LlmProviderModel
+    from app.backend.services.llm_provider_service import connection_dict, get_connection, normalize_base_url
+
+    try:
+        row = get_connection(db, connection_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    changes = data.model_dump(exclude_unset=True)
+    endpoint_changed = False
+    if "name" in changes:
+        name = changes["name"].strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name cannot be empty")
+        duplicate = db.query(LlmProviderConnection).filter(
+            LlmProviderConnection.name == name,
+            LlmProviderConnection.id != connection_id,
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="connection name already exists")
+        row.name = name
+    if "base_url" in changes:
+        try:
+            normalized = normalize_base_url(changes["base_url"] or "", row.provider_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        endpoint_changed = endpoint_changed or normalized != row.base_url
+        row.base_url = normalized
+    if changes.get("api_key"):
+        replacement = changes["api_key"].get_secret_value().strip()
+        if replacement:
+            endpoint_changed = endpoint_changed or replacement != row.api_key
+            row.api_key = replacement
+    if "enabled" in changes:
+        row.enabled = changes["enabled"]
+    if endpoint_changed:
+        db.query(LlmProviderModel).filter(
+            LlmProviderModel.connection_id == row.id,
+            LlmProviderModel.source == "remote",
+        ).update({"available": False}, synchronize_session=False)
+        row.last_tested_at = None
+        row.last_test_status = None
+        row.last_error = None
+        row.last_synced_at = None
+    db.commit()
+    db.refresh(row)
+    return connection_dict(row)
+
+
+@router.post("/llm/providers/{connection_id}/test")
+async def test_llm_provider(connection_id: int, db: Session = Depends(get_db)):
+    from app.backend.services.llm_provider_service import get_connection, test_connection
+
+    try:
+        row = get_connection(db, connection_id)
+        models = await test_connection(db, row)
+        return {"status": "success", "model_count": len(models)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("LLM connection test failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="unable to reach model endpoint") from exc
+
+
+@router.post("/llm/providers/{connection_id}/models/sync")
+async def sync_llm_provider_models(connection_id: int, db: Session = Depends(get_db)):
+    from app.backend.services.llm_provider_service import get_connection, model_dict, sync_models
+
+    try:
+        row = get_connection(db, connection_id)
+        models = await sync_models(db, row)
+        return {"models": [model_dict(model) for model in models]}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("LLM model sync failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="unable to synchronize models") from exc
+
+
+@router.get("/llm/providers/{connection_id}/models")
+def list_llm_provider_models(connection_id: int, db: Session = Depends(get_db)):
+    from app.backend.database.models import LlmProviderModel
+    from app.backend.services.llm_provider_service import get_connection, model_dict
+
+    try:
+        row = get_connection(db, connection_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    models = db.query(LlmProviderModel).filter(
+        LlmProviderModel.connection_id == row.id
+    ).order_by(LlmProviderModel.display_name).all()
+    return {"models": [model_dict(model) for model in models]}
+
+
+@router.post("/llm/providers/{connection_id}/models", status_code=201)
+def create_llm_provider_model(
+    connection_id: int,
+    data: LlmModelCreateRequest,
+    db: Session = Depends(get_db),
+):
+    from app.backend.database.models import LlmProviderModel
+    from app.backend.services.llm_provider_service import get_connection, model_dict
+
+    try:
+        row = get_connection(db, connection_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    exists = db.query(LlmProviderModel).filter(
+        LlmProviderModel.connection_id == row.id,
+        LlmProviderModel.model_id == data.model_id,
+    ).first()
+    if exists:
+        raise HTTPException(status_code=409, detail="model already exists for this connection")
+    model = LlmProviderModel(
+        connection_id=row.id,
+        model_id=data.model_id,
+        display_name=(data.display_name or data.model_id).strip(),
+        source="manual",
+        enabled=data.enabled,
+        available=True,
+    )
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return model_dict(model)
+
+
+@router.patch("/llm/providers/{connection_id}/models/{model_id:path}")
+def update_llm_provider_model(
+    connection_id: int,
+    model_id: str,
+    data: LlmModelUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    from app.backend.database.models import LlmProviderModel
+    from app.backend.services.llm_provider_service import get_connection, model_dict
+
+    try:
+        get_connection(db, connection_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    model = db.query(LlmProviderModel).filter(
+        LlmProviderModel.connection_id == connection_id,
+        LlmProviderModel.model_id == model_id,
+    ).first()
+    if model is None:
+        raise HTTPException(status_code=404, detail="LLM model not found")
+    changes = data.model_dump(exclude_unset=True)
+    if "display_name" in changes and changes["display_name"] is not None:
+        model.display_name = changes["display_name"].strip() or model.model_id
+    if "enabled" in changes:
+        model.enabled = changes["enabled"]
+    db.commit()
+    db.refresh(model)
+    return model_dict(model)
+
+
+@router.get("/llm/options")
+def llm_options(db: Session = Depends(get_db)):
+    from app.backend.database.models import LlmProviderConnection, LlmProviderModel
+    from app.backend.services.llm_provider_service import ensure_provider_tables
+
+    ensure_provider_tables(db)
+    connections = db.query(LlmProviderConnection).filter(
+        LlmProviderConnection.enabled.is_(True),
+    ).order_by(LlmProviderConnection.name).all()
+    options = []
+    for connection in connections:
+        if not connection.api_key:
+            continue
+        models = db.query(LlmProviderModel).filter(
+            LlmProviderModel.connection_id == connection.id,
+            LlmProviderModel.enabled.is_(True),
+        ).order_by(LlmProviderModel.display_name).all()
+        models = [model for model in models if model.source == "manual" or model.available]
+        if models:
+            options.append({
+                "id": connection.id,
+                "name": connection.name,
+                "provider_type": connection.provider_type,
+                "models": [
+                    {"model_id": model.model_id, "display_name": model.display_name}
+                    for model in models
+                ],
+            })
+    return {"providers": options}
+
+
+@router.get("/llm/models")
+async def llm_models():
+    """List v2-supported models and credential availability, never secrets."""
+    from app.backend.database.connection import SessionLocal
+    from app.backend.services.v2_llm_service import credential_configured
+    from v2.llm import catalog
+
+    session = SessionLocal()
+    try:
+        from app.backend.services.ollama_service import OllamaService
+        ollama_models = await OllamaService().get_available_models()
+        providers = []
+        for provider in catalog():
+            models = provider["models"]
+            configured = credential_configured(provider["id"], session)
+            if provider["id"] == "ollama":
+                models = [
+                    {"display_name": item["display_name"], "model": item["model_name"]}
+                    for item in ollama_models
+                ]
+                configured = bool(models)
+            providers.append({
+                "id": provider["id"],
+                "display_name": provider["display_name"],
+                "credential_configured": configured,
+                "models": models,
+            })
+        return {"providers": providers}
+    finally:
+        session.close()
+
+
 def _fund_path() -> str:
     fund_path = os.environ.get("FUND_SPEC_PATH", "")
     if not fund_path and _DAEMON is not None:
@@ -415,7 +766,60 @@ def _fund_path() -> str:
     return fund_path
 
 
-def _simulation_preflight(data: SimRunRequest) -> dict:
+def _resolve_simulation_llm(data: SimRunRequest, required: bool):
+    """Resolve one immutable client for this request/run."""
+    if data.llm_connection_id is not None:
+        from app.backend.database.connection import SessionLocal
+        from app.backend.services.llm_provider_service import resolve_connection
+        from v2.llm import make_llm
+
+        session = SessionLocal()
+        try:
+            snapshot = resolve_connection(session, data.llm_connection_id, data.model or "")
+        finally:
+            session.close()
+        client = make_llm(
+            snapshot.provider_type,
+            data.model or "",
+            credential=snapshot.api_key,
+            base_url=snapshot.base_url,
+            allow_unregistered_model=True,
+        )
+        return ResolvedSimulationLlm(
+            client=client,
+            provider=snapshot.provider_type,
+            model=data.model or "",
+            connection_id=snapshot.id,
+            connection_name=snapshot.name,
+            base_url=snapshot.base_url,
+        )
+
+    if data.provider is None:
+        if not required:
+            return None
+        from v2.llm import get_llm
+        client = get_llm()  # compatibility for older API callers and CLI-style setup
+        return ResolvedSimulationLlm(
+            client=client,
+            provider=getattr(client, "provider", type(client).__name__),
+            model=client.model,
+        )
+
+    from app.backend.database.connection import SessionLocal
+    from app.backend.services.v2_llm_service import resolve_credential
+    from v2.llm import make_llm, validate_selection
+
+    provider, model = validate_selection(data.provider, data.model or "")
+    session = SessionLocal()
+    try:
+        credential = resolve_credential(provider, session)
+    finally:
+        session.close()
+    client = make_llm(provider, model, credential=credential)
+    return ResolvedSimulationLlm(client=client, provider=provider, model=model)
+
+
+def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
     from v2.fund import load_spec
     from v2.simulation.runner import (
         _trading_days,
@@ -448,10 +852,13 @@ def _simulation_preflight(data: SimRunRequest) -> dict:
     model_name = "none"
     estimate = 0
     trading_days = _trading_days(_DB_PATH, benchmark, start_date, end_date)
+    llm = resolved_llm if resolved_llm is not None else _resolve_simulation_llm(
+        data, required=bool(persona_names)
+    )
+    if llm is not None:
+        provider = getattr(llm, "provider", type(llm).__name__)
+        model_name = llm.model
     if persona_names:
-        from v2.llm import get_llm
-        llm = get_llm()
-        provider, model_name = type(llm).__name__, llm.model
         estimate = estimate_filing_prompt_calls(
             _DB_PATH, tickers, trading_days, persona_names,
         )
@@ -475,7 +882,12 @@ def _simulation_preflight(data: SimRunRequest) -> dict:
 @router.post("/sim/preflight")
 def sim_preflight(data: SimRunRequest):
     """Always return the model-call estimate before starting a simulation."""
-    return _simulation_preflight(data)
+    try:
+        return _simulation_preflight(data)
+    except HTTPException:
+        raise
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/sim/run")
@@ -494,13 +906,21 @@ def sim_run(data: SimRunRequest):
     capital, name = data.initial_capital, data.name
 
     try:
-        preflight = _simulation_preflight(data)
+        resolved = (
+            _resolve_simulation_llm(data, required=True)
+            if data.llm_connection_id is not None or data.provider is not None
+            else None
+        )
+        preflight = _simulation_preflight(data, resolved_llm=resolved)
         if not data.confirm_cost:
             raise HTTPException(status_code=409, detail={
                 "message": "LLM call confirmation required",
                 **preflight,
             })
         from v2.simulation.runner import SimRunner
+        if resolved is None:
+            resolved = _resolve_simulation_llm(data, required=preflight["provider"] != "none")
+        llm = getattr(resolved, "client", resolved)
         sim_id = SimRunner.create(
             tickers=tickers,
             start_date=start_date,
@@ -510,6 +930,12 @@ def sim_run(data: SimRunRequest):
             db_path=_DB_PATH,
             fund_spec_path=_fund_path(),
             name=name,
+            llm=llm,
+            llm_provider=preflight["provider"],
+            llm_model=preflight["model"],
+            llm_connection_id=getattr(resolved, "connection_id", None),
+            llm_connection_name=getattr(resolved, "connection_name", None),
+            llm_base_url=getattr(resolved, "base_url", None),
         )
         runner = SimRunner._get(sim_id)
         if runner is None:

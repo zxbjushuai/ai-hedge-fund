@@ -20,6 +20,11 @@ class FakeLLM:
     """Canned-response LLM; counts calls; can raise instead."""
 
     model = "fake-model"
+    provider = "fake"
+
+    @property
+    def identity(self):
+        return f"{self.provider}:{self.model}"
 
     def __init__(self, response="", error=None):
         self._response = response
@@ -176,6 +181,8 @@ def test_prompt_and_response_persisted(tmp_path):
     assert len(records) == 1
     record = json.loads(records[0].read_text())
     assert record["agent"] == "buffett"
+    assert record["provider"] == "fake"
+    assert record["model_identity"] == "fake:fake-model"
     assert "You are Warren Buffett" in record["system"]
     assert "2024-12-31" in record["user"]  # the rendered snapshot
     assert record["response"] == BULLISH
@@ -191,6 +198,25 @@ def test_failed_parse_still_persists_response(tmp_path):
     record = json.loads(records[0].read_text())
     assert record["response"] == "garbage"
     assert "parse_error" in record
+
+
+def test_same_model_through_two_providers_does_not_share_cache(tmp_path):
+    class RoutedFake(FakeLLM):
+        model = "shared-name"
+
+        def __init__(self, provider):
+            super().__init__(BULLISH)
+            self.provider = provider
+
+    cache = PromptCache(tmp_path / "llm")
+    first = BuffettAgent(llm=RoutedFake("openai"), cache=cache)
+    second = BuffettAgent(llm=RoutedFake("openrouter"), cache=cache)
+    client = MockDataClient(metrics=_history())
+
+    first.predict("TEST", "2025-01-15", client)
+    second.predict("TEST", "2025-01-15", client)
+
+    assert len(list((tmp_path / "llm").glob("*.json"))) == 2
 
 
 # ---------------------------------------------------------------------------

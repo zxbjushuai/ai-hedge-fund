@@ -1,8 +1,8 @@
 import { cn } from '@/lib/utils';
 import { CubeIcon } from '@radix-ui/react-icons';
-import { Key, Palette } from 'lucide-react';
+import { Key, Palette, Server } from 'lucide-react';
 import { useState } from 'react';
-import { ApiKeysSettings, Models } from './';
+import { ApiKeysSettings, LlmProvidersSettings, Models } from './';
 import { ThemeSettings } from './appearance';
 
 interface SettingsProps {
@@ -27,6 +27,12 @@ export function Settings({ className }: SettingsProps) {
       description: 'API endpoints and authentication',
     },
     {
+      id: 'llm-providers',
+      label: 'LLM Providers',
+      icon: Server,
+      description: 'Provider connections and models',
+    },
+    {
       id: 'models',
       label: 'Models',
       icon: CubeIcon,
@@ -44,6 +50,8 @@ export function Settings({ className }: SettingsProps) {
     switch (selectedSection) {
       case 'models':
         return <Models />;
+      case 'llm-providers':
+        return <LlmProvidersSettings />;
       case 'theme':
         return <ThemeSettings />;
       case 'api':
@@ -93,4 +101,4 @@ export function Settings({ className }: SettingsProps) {
       </div>
     </div>
   );
-} 
+}

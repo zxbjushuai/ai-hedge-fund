@@ -53,12 +53,15 @@ export function SimResults({ result }: Props) {
 
   return (
     <div className="space-y-4">
-      {(result.models?.length || result.warnings?.length) && (
+      {(result.provider || result.models?.length || result.warnings?.length) && (
         <Card>
           <CardContent className="p-4 text-sm space-y-1">
             {result.models?.length ? (
               <p className="text-muted-foreground">Models used: {result.models.join(', ')}</p>
             ) : null}
+            <p className="text-muted-foreground">
+              LLM: {result.model ? `${result.llm_connection_name || result.provider || 'N/A'}/${result.model}` : 'N/A'}
+            </p>
             {result.warnings?.map((warning, index) => (
               <p key={index} className="text-amber-600">Data warning: {warning}</p>
             ))}

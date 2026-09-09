@@ -259,3 +259,18 @@ def extract_json(text: str) -> dict:
                         break
 
     raise LLMParseError(f"no JSON object found in response: {text[:200]!r}")
+
+
+# Unified implementations override the legacy definitions above while keeping
+# direct imports from v2.llm.client backward compatible.
+from v2.llm.providers import (  # noqa: E402,F401
+    AnthropicLLM,
+    ChatLLM,
+    DeepSeekLLM,
+    LLMClient,
+    ModelScopeLLM,
+    OpenRouterLLM,
+    get_llm,
+    make_llm,
+    normalize_response_content,
+)

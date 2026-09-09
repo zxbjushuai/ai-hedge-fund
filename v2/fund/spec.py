@@ -32,7 +32,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from v2.risk.limits import RiskLimits
-from v2.signals import ALPHA_MODEL_REGISTRY
+from v2.llm import LLMClient
+from v2.signals import ALPHA_MODEL_REGISTRY, LLMAgent
 from v2.signals.base import AlphaModel
 
 
@@ -176,6 +177,7 @@ class Fund:
         self,
         spec: FundSpec,
         models: dict[str, list[AlphaModel]] | None = None,
+        llm: LLMClient | None = None,
     ) -> None:
         self.spec = spec
         self.strategies: list[tuple[StrategySpec, list[AlphaModel]]] = []
@@ -190,5 +192,13 @@ class Fund:
                         f"unknown model {m.name!r} in strategy "
                         f"{strategy.name!r}; available: {sorted(ALPHA_MODEL_REGISTRY)}"
                     )
-                staff.append(ALPHA_MODEL_REGISTRY[m.name](**m.params))
+                model_class = ALPHA_MODEL_REGISTRY[m.name]
+                params = dict(m.params)
+                if llm is not None and issubclass(model_class, LLMAgent):
+                    if "llm" in params:
+                        raise ValueError(
+                            f"model {m.name!r} config cannot override the run-scoped LLM"
+                        )
+                    params["llm"] = llm
+                staff.append(model_class(**params))
             self.strategies.append((strategy, staff))

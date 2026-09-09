@@ -1,5 +1,6 @@
 import { simulationApi } from '@/services/simulation-api';
 import type { SimResult, SimRunSummary } from '@/services/simulation-api';
+import type { LlmConnectionOption } from '@/services/simulation-api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -20,6 +21,9 @@ export function SimulationPanel() {
   const [startDate, setStartDate] = useState(() => dateDaysAgo(45));
   const [endDate, setEndDate] = useState(() => dateDaysAgo(1));
   const [capital, setCapital] = useState('100000');
+  const [llmProviders, setLlmProviders] = useState<LlmConnectionOption[]>([]);
+  const [llmConnectionId, setLlmConnectionId] = useState('');
+  const [llmModel, setLlmModel] = useState('');
   const [running, setRunning] = useState(false);
   const [simId, setSimId] = useState<number | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
@@ -41,9 +45,27 @@ export function SimulationPanel() {
 
   useEffect(() => { loadRunList(); }, [loadRunList]);
 
+  useEffect(() => {
+    simulationApi.listLlmOptions().then(data => {
+      setLlmProviders(data.providers);
+      const provider = data.providers.find(item => item.models.length);
+      const model = provider?.models[0];
+      if (provider && model) {
+        setLlmConnectionId(String(provider.id));
+        setLlmModel(model.model_id);
+      }
+    }).catch(error => setMessage('Failed to load configured LLM providers: ' + errorMessage(error)));
+  }, []);
+
+  const selectedProvider = llmProviders.find(provider => String(provider.id) === llmConnectionId);
+
   const handleRun = async () => {
     const list = tickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
     if (!list.length) return;
+    if (!llmConnectionId || !llmModel) {
+      setMessage('Failed: configure and synchronize an LLM Provider in Settings, then select a model.');
+      return;
+    }
     setRunning(true);
     setMessage('Starting simulation...');
     setResults(null);
@@ -54,6 +76,8 @@ export function SimulationPanel() {
         start_date: startDate,
         end_date: endDate,
         initial_capital: parseFloat(capital) || 100000,
+        llm_connection_id: Number(llmConnectionId),
+        model: llmModel,
       };
       const preflight = await simulationApi.preflightSim(request);
       const warningText = preflight.warnings.length
@@ -132,7 +156,7 @@ export function SimulationPanel() {
           <CardTitle>Run Simulation</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             <div>
               <label className="text-sm text-muted-foreground mb-1 block">Tickers (from cache)</label>
               <Input value={tickers} onChange={e => setTickers(e.target.value)} placeholder="AAPL,MSFT" />
@@ -153,9 +177,43 @@ export function SimulationPanel() {
               <label className="text-sm text-muted-foreground mb-1 block">Initial Capital ($)</label>
               <Input type="number" value={capital} onChange={e => setCapital(e.target.value)} />
             </div>
+            <div>
+              <label className="text-sm text-muted-foreground mb-1 block">LLM Connection</label>
+              <select
+                value={llmConnectionId}
+                onChange={event => {
+                  const id = event.target.value;
+                  const provider = llmProviders.find(item => String(item.id) === id);
+                  setLlmConnectionId(id);
+                  setLlmModel(provider?.models[0]?.model_id || '');
+                }}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Select a configured connection</option>
+                {llmProviders.map(provider => (
+                  <option key={provider.id} value={provider.id}>{provider.name} ({provider.provider_type})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-sm text-muted-foreground mb-1 block">LLM Model</label>
+              <select
+                value={llmModel}
+                onChange={event => setLlmModel(event.target.value)}
+                disabled={!selectedProvider}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Select a synchronized model</option>
+                {selectedProvider?.models.map(model => (
+                  <option key={model.model_id} value={model.model_id}>
+                    {model.display_name} ({model.model_id})
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="flex items-center gap-3">
-            <Button onClick={handleRun} disabled={running}>
+            <Button onClick={handleRun} disabled={running || !llmConnectionId || !llmModel}>
               <Play className="h-4 w-4 mr-2" />
               {running ? 'Running...' : 'Run Simulation'}
             </Button>
@@ -217,6 +275,7 @@ export function SimulationPanel() {
                     <div className="text-xs text-muted-foreground mt-0.5">
                       {run.tickers.join(', ')} | {run.start_date} ~ {run.end_date} |
                       {' '}Benchmark: {run.benchmark || 'N/A'} |
+                      {' '}LLM: {run.model ? `${run.llm_connection_name || run.provider || 'N/A'}/${run.model}` : 'N/A'} |
                       Capital: ${run.initial_capital.toLocaleString()}
                       {run.final_nav != null && <> | Final NAV: ${run.final_nav.toLocaleString()}</>}
                     </div>

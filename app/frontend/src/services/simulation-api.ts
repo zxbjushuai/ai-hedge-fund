@@ -45,6 +45,28 @@ export interface SimRunRequest {
   initial_capital: number;
   name?: string;
   confirm_cost?: boolean;
+  provider?: string;
+  model?: string;
+  llm_connection_id?: number;
+}
+
+export interface LlmModelOption {
+  display_name: string;
+  model: string;
+}
+
+export interface LlmProviderOption {
+  id: string;
+  display_name: string;
+  credential_configured: boolean;
+  models: LlmModelOption[];
+}
+
+export interface LlmConnectionOption {
+  id: number;
+  name: string;
+  provider_type: 'openai' | 'anthropic';
+  models: { model_id: string; display_name: string }[];
 }
 
 export interface SimPreflight {
@@ -68,6 +90,11 @@ export interface SimStatus {
   completed_at?: string | null;
   warnings?: string[];
   models?: string[];
+  provider: string | null;
+  model: string | null;
+  llm_connection_id: number | null;
+  llm_connection_name: string | null;
+  llm_base_url: string | null;
 }
 
 export interface SimNavPoint {
@@ -97,6 +124,11 @@ export interface SimResult {
   end_date: string;
   initial_capital: number;
   benchmark: string | null;
+  provider: string | null;
+  model: string | null;
+  llm_connection_id: number | null;
+  llm_connection_name: string | null;
+  llm_base_url: string | null;
   final_nav: number;
   total_return_pct: number;
   benchmark_return_pct: number | null;
@@ -124,6 +156,11 @@ export interface SimRunSummary {
   end_date: string;
   initial_capital: number;
   benchmark: string | null;
+  provider: string | null;
+  model: string | null;
+  llm_connection_id: number | null;
+  llm_connection_name: string | null;
+  llm_base_url: string | null;
   status: string;
   current_day: number;
   total_days: number;
@@ -136,6 +173,18 @@ export interface SimRunSummary {
 }
 
 export const simulationApi = {
+  async listLlmModels(): Promise<{ providers: LlmProviderOption[] }> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/llm/models`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async listLlmOptions(): Promise<{ providers: LlmConnectionOption[] }> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/llm/options`);
+    await requireOk(res);
+    return res.json();
+  },
+
   async fetchCache(req: FetchCacheRequest): Promise<FetchCacheResult> {
     const res = await fetch(`${API_BASE_URL}/dashboard/cache/fetch`, {
       method: 'POST',
