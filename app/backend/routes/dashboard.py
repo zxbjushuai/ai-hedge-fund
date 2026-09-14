@@ -82,7 +82,9 @@ class SimRunRequest(CacheFetchRequest):
 
 class LlmProviderCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    provider_type: str
+    vendor: str | None = None
+    protocol: str | None = None
+    provider_type: str | None = None
     base_url: str = Field(default="", max_length=500)
     api_key: SecretStr
     enabled: bool = True
@@ -94,6 +96,19 @@ class LlmProviderCreateRequest(BaseModel):
         if not value:
             raise ValueError("value cannot be empty")
         return value
+
+    @model_validator(mode="after")
+    def complete_connection_kind(self):
+        from v2.llm.registry import connection_kind_for_legacy
+
+        if self.vendor is not None or self.protocol is not None:
+            if not self.vendor or not self.protocol:
+                raise ValueError("vendor and protocol must be supplied together")
+        elif self.provider_type:
+            self.vendor, self.protocol = connection_kind_for_legacy(self.provider_type)
+        else:
+            raise ValueError("vendor and protocol are required")
+        return self
 
 
 class LlmProviderUpdateRequest(BaseModel):
@@ -126,10 +141,12 @@ class LlmModelUpdateRequest(BaseModel):
 class ResolvedSimulationLlm:
     client: object
     provider: str
+    protocol: str | None
     model: str
     connection_id: int | None = None
     connection_name: str | None = None
     base_url: str | None = None
+    session_id: str | None = None
 
 
 def set_daemon(daemon) -> None:
@@ -496,23 +513,27 @@ def llm_provider_connections(db: Session = Depends(get_db)):
 def create_llm_provider(data: LlmProviderCreateRequest, db: Session = Depends(get_db)):
     from app.backend.database.models import LlmProviderConnection
     from app.backend.services.llm_provider_service import (
-        connection_dict, ensure_provider_tables, normalize_base_url,
+        connection_dict, ensure_provider_tables, normalize_connection_base_url,
     )
+    from v2.llm.registry import legacy_provider_type
 
     ensure_provider_tables(db)
-    provider = data.provider_type.strip().lower()
+    vendor = (data.vendor or "").strip().lower()
+    protocol = (data.protocol or "").strip()
     secret = data.api_key.get_secret_value().strip()
     if not secret:
         raise HTTPException(status_code=422, detail="api_key cannot be empty")
     try:
-        base_url = normalize_base_url(data.base_url, provider)
+        base_url = normalize_connection_base_url(data.base_url, vendor, protocol)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if db.query(LlmProviderConnection).filter(LlmProviderConnection.name == data.name).first():
         raise HTTPException(status_code=409, detail="connection name already exists")
     row = LlmProviderConnection(
         name=data.name,
-        provider_type=provider,
+        vendor=vendor,
+        protocol=protocol,
+        provider_type=legacy_provider_type(vendor, protocol),
         base_url=base_url,
         api_key=secret,
         enabled=data.enabled,
@@ -534,7 +555,10 @@ def update_llm_provider(
     db: Session = Depends(get_db),
 ):
     from app.backend.database.models import LlmProviderConnection, LlmProviderModel
-    from app.backend.services.llm_provider_service import connection_dict, get_connection, normalize_base_url
+    from app.backend.services.llm_provider_service import (
+        connection_dict, connection_kind, get_connection,
+        normalize_connection_base_url,
+    )
 
     try:
         row = get_connection(db, connection_id)
@@ -555,7 +579,10 @@ def update_llm_provider(
         row.name = name
     if "base_url" in changes:
         try:
-            normalized = normalize_base_url(changes["base_url"] or "", row.provider_type)
+            vendor, protocol = connection_kind(row)
+            normalized = normalize_connection_base_url(
+                changes["base_url"] or "", vendor, protocol,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         endpoint_changed = endpoint_changed or normalized != row.base_url
@@ -716,6 +743,8 @@ def llm_options(db: Session = Depends(get_db)):
                 "id": connection.id,
                 "name": connection.name,
                 "provider_type": connection.provider_type,
+                "vendor": connection.vendor,
+                "protocol": connection.protocol,
                 "models": [
                     {"model_id": model.model_id, "display_name": model.display_name}
                     for model in models
@@ -771,27 +800,33 @@ def _resolve_simulation_llm(data: SimRunRequest, required: bool):
     if data.llm_connection_id is not None:
         from app.backend.database.connection import SessionLocal
         from app.backend.services.llm_provider_service import resolve_connection
-        from v2.llm import make_llm
+        from v2.llm import LlmProtocol, LlmRuntimeConfig, make_connection_llm
+        from v2.llm.adapter_registry import get_vendor
 
         session = SessionLocal()
         try:
             snapshot = resolve_connection(session, data.llm_connection_id, data.model or "")
         finally:
             session.close()
-        client = make_llm(
-            snapshot.provider_type,
-            data.model or "",
-            credential=snapshot.api_key,
+        vendor = get_vendor(snapshot.vendor)
+        session_id = vendor.new_session_id()
+        client = make_connection_llm(LlmRuntimeConfig(
+            vendor=snapshot.vendor,
+            protocol=LlmProtocol(snapshot.protocol),
+            model=data.model or "",
             base_url=snapshot.base_url,
-            allow_unregistered_model=True,
-        )
+            api_key=snapshot.api_key,
+            session_id=session_id,
+        ))
         return ResolvedSimulationLlm(
             client=client,
-            provider=snapshot.provider_type,
+            provider=snapshot.vendor,
+            protocol=snapshot.protocol,
             model=data.model or "",
             connection_id=snapshot.id,
             connection_name=snapshot.name,
             base_url=snapshot.base_url,
+            session_id=session_id,
         )
 
     if data.provider is None:
@@ -802,6 +837,7 @@ def _resolve_simulation_llm(data: SimRunRequest, required: bool):
         return ResolvedSimulationLlm(
             client=client,
             provider=getattr(client, "provider", type(client).__name__),
+            protocol=getattr(client, "protocol", None),
             model=client.model,
         )
 
@@ -816,7 +852,12 @@ def _resolve_simulation_llm(data: SimRunRequest, required: bool):
     finally:
         session.close()
     client = make_llm(provider, model, credential=credential)
-    return ResolvedSimulationLlm(client=client, provider=provider, model=model)
+    return ResolvedSimulationLlm(
+        client=client,
+        provider=provider,
+        protocol=getattr(client, "protocol", None),
+        model=model,
+    )
 
 
 def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
@@ -932,6 +973,7 @@ def sim_run(data: SimRunRequest):
             name=name,
             llm=llm,
             llm_provider=preflight["provider"],
+            llm_protocol=getattr(resolved, "protocol", None),
             llm_model=preflight["model"],
             llm_connection_id=getattr(resolved, "connection_id", None),
             llm_connection_name=getattr(resolved, "connection_name", None),
@@ -976,6 +1018,59 @@ def sim_result(sim_id: int):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sim/{sim_id}/cycles")
+def sim_cycles(
+    sim_id: int,
+    date: str | None = None,
+    signal_date: str | None = None,
+    execution_date: str | None = None,
+    ticker: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List indexed decision-cycle audit summaries for one simulation."""
+    if not 1 <= limit <= 500 or offset < 0:
+        raise HTTPException(status_code=422, detail="invalid audit pagination")
+    try:
+        from v2.simulation.audit import list_cycle_audits
+
+        result = list_cycle_audits(
+            sim_id,
+            _DB_PATH,
+            date=date,
+            signal_date=signal_date,
+            execution_date=execution_date,
+            ticker=ticker,
+            limit=limit,
+            offset=offset,
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail="sim not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("cycle audit list failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sim/{sim_id}/cycles/{cycle_id}")
+def sim_cycle_detail(sim_id: int, cycle_id: int):
+    """Return one full serialized cycle after run ownership validation."""
+    try:
+        from v2.simulation.audit import get_cycle_audit
+
+        result = get_cycle_audit(sim_id, cycle_id, _DB_PATH)
+        if result is None:
+            raise HTTPException(status_code=404, detail="cycle not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("cycle audit detail failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

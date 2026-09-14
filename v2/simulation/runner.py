@@ -12,11 +12,16 @@ from sqlalchemy.orm import Session
 
 from v2.brokers import SimBroker
 from v2.data.mock_client import MockDataClient
+from v2.failures import classify_cycle_failure
 from v2.fund import Fund, load_spec, normalize_universe
 from v2.llm import LLMClient
 from v2.persistence.database import get_session, init_db
-from v2.persistence.models import EarningsCache, MetricsCache, PriceCache, SimNavSnapshot, SimRun, SimTradeLog
+from v2.persistence.models import (
+    EarningsCache, MetricsCache, PriceCache, SimCycleRecord,
+    SimNavSnapshot, SimRun, SimTradeLog,
+)
 from v2.pipeline import run_cycle
+from v2.simulation.audit import persist_completed_cycle, persist_failed_cycle
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +200,7 @@ class SimRunner:
         fee_rate: float = 0.001,
         llm: LLMClient | None = None,
         llm_provider: str | None = None,
+        llm_protocol: str | None = None,
         llm_model: str | None = None,
         llm_connection_id: int | None = None,
         llm_connection_name: str | None = None,
@@ -207,11 +213,22 @@ class SimRunner:
         if not benchmark:
             raise ValueError("benchmark is empty")
         if llm is not None:
+            client_protocol = getattr(llm, "protocol", None)
             if llm_provider is not None and llm_provider != llm.provider:
                 raise ValueError("persisted LLM provider does not match the injected client")
+            if (
+                llm_protocol is not None
+                and client_protocol is not None
+                and llm_protocol != client_protocol
+            ):
+                raise ValueError("persisted LLM protocol does not match the injected client")
             if llm_model is not None and llm_model != llm.model:
                 raise ValueError("persisted LLM model does not match the injected client")
-            llm_provider, llm_model = llm.provider, llm.model
+            llm_provider, llm_protocol, llm_model = (
+                llm.provider,
+                client_protocol or llm_protocol,
+                llm.model,
+            )
         session = get_session(db_path)
         try:
             days = _trading_days(db_path, benchmark, start_date, end_date)
@@ -224,6 +241,7 @@ class SimRunner:
                 tickers=json.dumps(tickers),
                 benchmark=benchmark,
                 llm_provider=llm_provider,
+                llm_protocol=llm_protocol,
                 llm_model=llm_model,
                 llm_connection_id=llm_connection_id,
                 llm_connection_name=llm_connection_name,
@@ -310,37 +328,45 @@ class SimRunner:
             for i, day in enumerate(days[1:], start=1):
                 signal_day = days[i - 1]
                 opens, closes = self._prices_for_day(day)
-                record = run_cycle(
-                    fund, signal_day, broker, data_client,
-                    execution_prices=opens, valuation_prices=closes, execution_date=day,
-                    universe=self._tickers,
-                )
+                try:
+                    record = run_cycle(
+                        fund, signal_day, broker, data_client,
+                        execution_prices=opens, valuation_prices=closes, execution_date=day,
+                        universe=self._tickers,
+                    )
+                except Exception as exc:
+                    try:
+                        persist_failed_cycle(
+                            self._db_path,
+                            self._id,
+                            i,
+                            signal_day,
+                            day,
+                            self._tickers,
+                            exc,
+                        )
+                    except Exception:
+                        logger.exception("could not persist failed cycle audit for sim %s", self._id)
+                    raise
 
                 benchmark_nav = (
                     self._capital * benchmark_closes[day] / benchmark_base
                 )
 
-                self._save_nav_snapshot(
-                    session=get_session(self._db_path),
-                    cycle_date=day,
-                    nav=record.nav,
-                    cash=record.cash,
-                    equity=record.nav - record.cash,
-                    benchmark_nav=benchmark_nav,
+                persist_completed_cycle(
+                    self._db_path, self._id, i, record, benchmark_nav,
                 )
-
-                if broker._last_trades:
+                if record.fills:
                     logger.info(
                         "sim %d trades on %s: count=%d nav=%.2f cash=%.2f",
-                        self._id, day, len(broker._last_trades), record.nav, record.cash,
+                        self._id, day, len(record.fills), record.nav, record.cash,
                     )
-                    self._save_trades(session=get_session(self._db_path), trades=broker._last_trades)
-                    broker._last_trades = []
+                broker._last_trades = []
                 self._set_progress(i + 1)
             self._finish(days)
         except Exception as exc:
             logger.exception("simulation %s failed", self._id)
-            self._fail(str(exc))
+            self._fail(classify_cycle_failure(exc).message)
 
     def _prices_for_day(self, day: str) -> tuple[dict[str, float], dict[str, float]]:
         with get_session(self._db_path) as session:
@@ -390,24 +416,6 @@ class SimRunner:
         finally:
             session.close()
 
-    def _save_trades(self, session: Session, trades: list[dict]) -> None:
-        try:
-            for t in trades:
-                sim_trade = SimTradeLog(
-                    sim_run_id=self._id,
-                    ticker=t.get("ticker", ""),
-                    side=t.get("side", "BUY"),
-                    quantity=t.get("quantity", 0),
-                    price=t.get("price", 0.0),
-                    fee=t.get("fee", 0.0),
-                    total_amount=t.get("total_amount", 0.0),
-                    cycle_date=t.get("cycle_date", ""),
-                )
-                session.add(sim_trade)
-            session.commit()
-        finally:
-            session.close()
-
     def _finish(self, days: list[str]) -> None:
         final_session = get_session(self._db_path)
         try:
@@ -451,6 +459,7 @@ def get_sim_status(sim_id: int, db_path: str) -> dict | None:
             "total_days": run.total_days,
             "final_nav": run.final_nav,
             "provider": run.llm_provider,
+            "protocol": run.llm_protocol,
             "model": run.llm_model,
             "llm_connection_id": run.llm_connection_id,
             "llm_connection_name": run.llm_connection_name,
@@ -556,6 +565,11 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
 
         buy_count = sum(1 for t in trade_rows if t.side == "BUY")
         sell_count = sum(1 for t in trade_rows if t.side == "SELL")
+        audit_available = session.scalar(
+            select(SimCycleRecord.id)
+            .where(SimCycleRecord.sim_run_id == sim_id)
+            .limit(1)
+        ) is not None
 
         return {
             "id": run.id,
@@ -566,6 +580,7 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "initial_capital": run.initial_capital,
             "benchmark": run.benchmark,
             "provider": run.llm_provider,
+            "protocol": run.llm_protocol,
             "model": run.llm_model,
             "llm_connection_id": run.llm_connection_id,
             "llm_connection_name": run.llm_connection_name,
@@ -593,6 +608,7 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "completed_at": run.completed_at,
             "warnings": json.loads(run.warnings or "[]"),
             "models": json.loads(run.models or "[]"),
+            "audit_available": audit_available,
         }
     finally:
         session.close()
@@ -615,6 +631,7 @@ def list_sim_runs(db_path: str) -> list[dict]:
                 "initial_capital": r.initial_capital,
                 "benchmark": r.benchmark,
                 "provider": r.llm_provider,
+                "protocol": r.llm_protocol,
                 "model": r.llm_model,
                 "llm_connection_id": r.llm_connection_id,
                 "llm_connection_name": r.llm_connection_name,

@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from v2.brokers import SimBroker
 from v2.brokers.models import Order
+from v2.data.client import FDClientError
 from v2.persistence.database import get_session, init_db
 from v2.data.models import EarningsData, EarningsRecord, FinancialMetrics, Price
 from v2.data.mock_client import MockDataClient
@@ -17,12 +19,21 @@ from v2.persistence.models import (
     EarningsCache,
     MetricsCache,
     PriceCache,
+    SimCycleRecord,
+    SimCycleTickerIndex,
     SimNavSnapshot,
     SimRun,
     SimTradeLog,
     TradeLog,
 )
 from v2.signals.base import AlphaModel
+from v2.pipeline.models import CycleRecord
+from v2.simulation.audit import (
+    get_cycle_audit,
+    list_cycle_audits,
+    persist_completed_cycle,
+    persist_failed_cycle,
+)
 from v2.simulation.runner import SimRunner, _trading_days, get_sim_result
 
 
@@ -102,11 +113,19 @@ def test_additive_migration_adds_nullable_benchmark_and_llm_columns(tmp_path: Pa
         connection.close()
     assert "benchmark" in run_columns
     assert "llm_provider" in run_columns
+    assert "llm_protocol" in run_columns
     assert "llm_model" in run_columns
     assert "llm_connection_id" in run_columns
     assert "llm_connection_name" in run_columns
     assert "llm_base_url" in run_columns
     assert "benchmark_nav" in nav_columns
+    with sqlite3.connect(db) as migrated:
+        tables = {
+            row[0] for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert {"sim_cycle_record", "sim_cycle_ticker_index"} <= tables
 
 
 def test_mock_client_hides_metrics_until_estimated_filing_date(tmp_path: Path):
@@ -327,6 +346,11 @@ capital: 1000
         run = session.get(SimRun, sim_id)
         trades = session.execute(select(SimTradeLog).where(SimTradeLog.sim_run_id == sim_id)).scalars().all()
         navs = session.execute(select(SimNavSnapshot).where(SimNavSnapshot.sim_run_id == sim_id).order_by(SimNavSnapshot.cycle_date)).scalars().all()
+        cycles = session.execute(
+            select(SimCycleRecord)
+            .where(SimCycleRecord.sim_run_id == sim_id)
+            .order_by(SimCycleRecord.cycle_number)
+        ).scalars().all()
         assert run.status == "completed"
         assert run.current_day == 3
         assert trades and trades[0].cycle_date == "2024-01-11"
@@ -337,6 +361,20 @@ capital: 1000
         assert navs[-1].benchmark_nav == pytest.approx(1020)
         assert all(trade.ticker != "SPY" for trade in trades)
         assert session.execute(select(TradeLog)).scalars().all() == []
+        assert len(cycles) == 2
+        assert cycles[0].signal_date == "2024-01-10"
+        assert cycles[0].execution_date == "2024-01-11"
+        assert json.loads(cycles[0].payload)["execution_date"] == "2024-01-11"
+        assert json.loads(cycles[0].payload)["execution_prices"]["AAA"] == 12
+        assert json.loads(cycles[0].payload)["valuation_prices"]["AAA"] == 13
+        ticker_index = session.execute(
+            select(SimCycleTickerIndex).where(
+                SimCycleTickerIndex.sim_cycle_record_id == cycles[0].id,
+                SimCycleTickerIndex.ticker == "AAA",
+            )
+        ).scalar_one()
+        assert ticker_index.produced_count == 2
+        assert ticker_index.fill_count == 1
 
     result = get_sim_result(sim_id, str(db))
     assert result is not None
@@ -346,6 +384,29 @@ capital: 1000
         result["total_return_pct"] - 2.0
     )
     assert result["nav_curve"][-1]["benchmark_nav"] == pytest.approx(1020)
+    assert result["audit_available"] is True
+
+    listed = list_cycle_audits(sim_id, str(db), ticker="aaa")
+    assert listed is not None
+    assert listed["audit_available"] is True
+    assert len(listed["items"]) == 2
+    detail = get_cycle_audit(sim_id, listed["items"][0]["id"], str(db))
+    assert detail is not None
+    assert detail["record"]["target_weights"]["AAA"] > 0
+    assert detail["record"]["orders"][0]["price"] == 12
+    assert detail["record"]["fills"][0]["price"] == 12
+
+    with get_session(str(db)) as session:
+        nav_count = session.query(SimNavSnapshot).filter_by(sim_run_id=sim_id).count()
+        trade_count = session.query(SimTradeLog).filter_by(sim_run_id=sim_id).count()
+        payload = session.get(SimCycleRecord, listed["items"][0]["id"]).payload
+    with pytest.raises(IntegrityError):
+        persist_completed_cycle(
+            str(db), sim_id, 1, CycleRecord.model_validate_json(payload), 1000,
+        )
+    with get_session(str(db)) as session:
+        assert session.query(SimNavSnapshot).filter_by(sim_run_id=sim_id).count() == nav_count
+        assert session.query(SimTradeLog).filter_by(sim_run_id=sim_id).count() == trade_count
 
 
 def test_sim_api_requires_confirmation_for_cold_cache_upper_bound(tmp_path: Path, monkeypatch):
@@ -499,6 +560,67 @@ def test_old_simulation_result_keeps_benchmark_fields_null(tmp_path: Path):
     assert result["benchmark_return_pct"] is None
     assert result["excess_return_pct"] is None
     assert result["nav_curve"][0]["benchmark_nav"] is None
+    assert result["audit_available"] is False
+    listed = list_cycle_audits(sim_id, str(db))
+    assert listed is not None
+    assert listed["audit_available"] is False
+    assert listed["items"] == []
+
+
+def test_failed_cycle_audit_categorizes_data_failure_without_secret(tmp_path: Path):
+    db = tmp_path / "failed-audit.db"
+    with get_session(str(db)) as session:
+        run = SimRun(
+            name="failed", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-02",
+            initial_capital=1000, status="running", total_days=2,
+        )
+        session.add(run)
+        session.commit()
+        sim_id = run.id
+
+    cycle_id = persist_failed_cycle(
+        str(db), sim_id, 1, "2024-01-01", "2024-01-02", ["AAA"],
+        FDClientError("provider rejected api_key=secret", status_code=500),
+    )
+    detail = get_cycle_audit(sim_id, cycle_id, str(db))
+    assert detail is not None
+    assert detail["status"] == "failed"
+    assert detail["error_category"] == "data_provider"
+    assert "secret" not in detail["error_message"]
+    assert detail["record"] is None
+
+
+def test_cycle_audit_dashboard_filters_and_checks_run_ownership(tmp_path: Path, monkeypatch):
+    import app.backend.routes.dashboard as dashboard
+
+    db = tmp_path / "audit-api.db"
+    monkeypatch.setattr(dashboard, "_DB_PATH", str(db))
+    with get_session(str(db)) as session:
+        first = SimRun(
+            name="first", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-02",
+            initial_capital=1000, status="failed", total_days=2,
+        )
+        second = SimRun(
+            name="second", tickers=json.dumps(["BBB"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-02",
+            initial_capital=1000, status="failed", total_days=2,
+        )
+        session.add_all([first, second])
+        session.commit()
+        first_id, second_id = first.id, second.id
+    cycle_id = persist_failed_cycle(
+        str(db), first_id, 1, "2024-01-01", "2024-01-02", ["AAA"],
+        ValueError("test failure"),
+    )
+
+    listed = dashboard.sim_cycles(first_id, date="2024-01-02", ticker="aaa")
+    assert [item["id"] for item in listed["items"]] == [cycle_id]
+    assert dashboard.sim_cycle_detail(first_id, cycle_id)["cycle_number"] == 1
+    with pytest.raises(HTTPException) as exc_info:
+        dashboard.sim_cycle_detail(second_id, cycle_id)
+    assert exc_info.value.status_code == 404
 
 
 def test_sim_run_persists_managed_connection_snapshot(tmp_path: Path):
@@ -586,10 +708,10 @@ def test_modelscope_provider_uses_openai_compatible_configuration(monkeypatch):
     monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChat)
     monkeypatch.setenv("MODELSCOPE_API_KEY", "test-token")
     monkeypatch.setenv("V2_LLM_BASE_URL", "https://api-inference.modelscope.cn/v1/")
-    client = ModelScopeLLM(model="Qwen/Qwen3-4B")
+    client = ModelScopeLLM(model="Qwen/Qwen3.5-35B-A3B")
     assert client.complete("system", "user") == '{"signal":"neutral"}'
-    assert captured["base_url"] == "https://api-inference.modelscope.cn/v1/"
-    assert captured["model"] == "Qwen/Qwen3-4B"
+    assert captured["base_url"] == "https://api-inference.modelscope.cn/v1"
+    assert captured["model"] == "Qwen/Qwen3.5-35B-A3B"
     assert captured["extra_body"] == {"enable_thinking": False}
 
 

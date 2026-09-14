@@ -118,6 +118,10 @@ class LlmProviderConnection(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False, unique=True, index=True)
+    vendor = Column(String(32), nullable=True, index=True)
+    protocol = Column(String(40), nullable=True, index=True)
+    # Compatibility discriminator for databases and clients created before
+    # vendor and wire protocol became independent fields.
     provider_type = Column(String(20), nullable=False, index=True)
     base_url = Column(String(500), nullable=False)
     api_key = Column(Text, nullable=False)

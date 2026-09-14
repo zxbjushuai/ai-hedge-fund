@@ -3,13 +3,17 @@
 from v2.llm.cache import PromptCache, prompt_key
 from v2.llm.client import DEFAULT_MODEL, LLMParseError, extract_json
 from v2.llm.providers import (
-    AnthropicLLM, ChatLLM, DeepSeekLLM, LLMClient, ModelScopeLLM,
-    OpenRouterLLM, get_llm, make_llm, normalize_response_content,
+    AnthropicLLM, ChatLLM, DeepSeekLLM, LLMClient, ModelScopeLLM, ResponsesLLM,
+    OpenRouterLLM, get_llm, make_connection_llm, make_llm,
+    normalize_response_content,
 )
+from v2.llm.base import AnthropicMessagesLLM
 from v2.llm.registry import catalog, load_models, provider_spec, validate_selection
+from v2.llm.types import LlmProtocol, LlmRuntimeConfig
 
 __all__ = [
     "AnthropicLLM",
+    "AnthropicMessagesLLM",
     "ChatLLM",
     "DeepSeekLLM",
     "DEFAULT_MODEL",
@@ -18,13 +22,17 @@ __all__ = [
     "ModelScopeLLM",
     "OpenRouterLLM",
     "PromptCache",
+    "ResponsesLLM",
     "extract_json",
     "get_llm",
     "make_llm",
+    "make_connection_llm",
     "normalize_response_content",
     "prompt_key",
     "catalog",
     "load_models",
     "provider_spec",
     "validate_selection",
+    "LlmProtocol",
+    "LlmRuntimeConfig",
 ]

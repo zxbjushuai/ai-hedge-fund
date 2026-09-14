@@ -227,51 +227,10 @@ echo %INFO% Starting the AI Hedge Fund web application...
 echo %INFO% Press Ctrl+C to stop all services
 echo.
 
-REM Start backend
-echo %INFO% Launching backend server...
-REM Run from project root to ensure proper Python imports
-cd ..
-start /b poetry run python -m v2.run_daemon v2/funds/example.yaml --interval manual --host 127.0.0.1 --port 8000 --log-dir logs >> "%BACKEND_CONSOLE_LOG%" 2>&1
-cd app
-
-timeout /t 3 /nobreak >nul
-
-REM Check database initialization
-echo %INFO% Checking database initialization...
-timeout /t 2 /nobreak >nul
-
-if exist "..\fund.db" (
-    echo %SUCCESS% Database initialized successfully
-) else (
-    echo %WARNING% Database file not found, but will be created on first API call
-)
-
-REM Start frontend
-echo %INFO% Launching frontend development server...
-cd frontend
-start /b npm.cmd run dev >> "%FRONTEND_LOG%" 2>&1
-cd ..
-
-timeout /t 5 /nobreak >nul
-
-echo %INFO% Opening browser...
-timeout /t 2 /nobreak >nul
-start http://localhost:5173
-
-echo.
-echo %SUCCESS% AI Hedge Fund web application is now running
-echo %INFO% Frontend: http://localhost:5173
-echo %INFO% Backend:  http://localhost:8000
-echo %INFO% Docs:     http://localhost:8000/docs
-echo %INFO% Simulation database: SQLite (fund.db in project root)
-echo %INFO% Logs:     %LOG_DIR%
-echo.
-echo %INFO% Press any key to stop both services...
-pause >nul
-
-REM Stop services
-taskkill /f /im "uvicorn.exe" >nul 2>&1
-taskkill /f /im "node.exe" >nul 2>&1
-
-echo %SUCCESS% Services stopped. Goodbye
-pause
+REM Give the service supervisor its own console. Ctrl+C is then delivered only
+REM to PowerShell instead of also interrupting this parent batch process and
+REM triggering cmd.exe's "Terminate batch job (Y/N)?" prompt.
+echo %INFO% A service console will open. Press Ctrl+C in that window to stop the app.
+start "AI Hedge Fund Services" /wait powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run-services.ps1" -LogDirectory "%LOG_DIR%"
+set "RUN_EXIT_CODE=%ERRORLEVEL%"
+exit /b %RUN_EXIT_CODE%

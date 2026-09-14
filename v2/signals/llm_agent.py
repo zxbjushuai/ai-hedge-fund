@@ -12,10 +12,11 @@ all the machinery; a persona is just a name + a system prompt:
         def get_system_prompt(self) -> str:
             return "You are Warren Buffett..."
 
-Failure contract (locked decisions):
+Failure contract:
 - Data-layer errors PROPAGATE (fail loud — a broken snapshot must never
   silently become a neutral view).
-- LLM call/parse failures ABSTAIN: Signal(value=0.0, metadata.abstained=True).
+- Missing point-in-time inputs ABSTAIN.
+- LLM call/parse failures produce a typed FAILED signal.
 - Every LLM decision persists its exact prompt + response (via PromptCache),
   and an unchanged snapshot never pays for a second LLM call.
 """
@@ -25,6 +26,7 @@ from __future__ import annotations
 import logging
 
 from v2.data.protocol import DataClient
+from v2.failures import classify_llm_failure
 from v2.features.snapshot import FundamentalsSnapshot, InsufficientData, build_snapshot
 from v2.llm import LLMClient, PromptCache, extract_json, get_llm, prompt_key
 from v2.models import Signal
@@ -71,8 +73,12 @@ class LLMAgent(AlphaModel):
         try:
             response = self._llm.complete(system, user)
         except Exception as exc:
-            logger.warning("%s LLM call failed for %s@%s: %s", self.name, ticker, date, exc)
-            return self._abstain(ticker, date, f"LLM call failed: {exc}")
+            failure = classify_llm_failure(exc)
+            logger.warning(
+                "%s LLM call failed for %s@%s (%s)",
+                self.name, ticker, date, failure.category,
+            )
+            return self._failed(ticker, date, failure)
 
         record = {
             "agent": self.name,
@@ -93,7 +99,7 @@ class LLMAgent(AlphaModel):
             # Persist the raw response even when unparseable — the debug trail.
             self._cache.put(key, {**record, "parse_error": str(exc)})
             logger.warning("%s parse failed for %s@%s: %s", self.name, ticker, date, exc)
-            return self._abstain(ticker, date, f"parse failed: {exc}")
+            return self._failed_response(ticker, date)
 
         self._cache.put(key, {**record, "parsed": parsed})
         return self._to_signal(ticker, date, parsed, key, snapshot, cached=False)
@@ -153,6 +159,7 @@ class LLMAgent(AlphaModel):
             ticker=ticker,
             date=date,
             value=value,
+            status="produced",
             reasoning=parsed["reasoning"],
             metadata={
                 "signal": parsed["signal"],
@@ -162,6 +169,7 @@ class LLMAgent(AlphaModel):
                 "snapshot_hash": snapshot.content_hash,
                 "cached": cached,
                 "abstained": False,
+                "failed": False,
             },
         )
 
@@ -171,6 +179,47 @@ class LLMAgent(AlphaModel):
             ticker=ticker,
             date=date,
             value=0.0,
+            status="abstained",
+            failure={
+                "category": "insufficient_data",
+                "message": reason,
+                "retryable": False,
+            },
             reasoning=f"abstained: {reason}",
-            metadata={"abstained": True, "abstain_reason": reason, "cached": False},
+            metadata={
+                "abstained": True,
+                "failed": False,
+                "abstain_reason": reason,
+                "cached": False,
+            },
+        )
+
+    def _failed(self, ticker: str, date: str, failure) -> Signal:
+        return Signal(
+            model_name=self.name,
+            ticker=ticker,
+            date=date,
+            value=0.0,
+            status="failed",
+            failure=failure,
+            reasoning=f"failed: {failure.message}",
+            metadata={
+                "abstained": False,
+                "failed": True,
+                "failure_category": failure.category,
+                "cached": False,
+            },
+        )
+
+    def _failed_response(self, ticker: str, date: str) -> Signal:
+        from v2.models import FailureDetail
+
+        return self._failed(
+            ticker,
+            date,
+            FailureDetail(
+                category="invalid_response",
+                message="LLM response could not be parsed as a valid signal",
+                retryable=True,
+            ),
         )

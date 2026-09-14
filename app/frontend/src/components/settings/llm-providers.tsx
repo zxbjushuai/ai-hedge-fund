@@ -5,13 +5,36 @@ import {
   llmProvidersApi,
   type LlmProviderConnection,
   type LlmProviderModel,
+  type LlmProtocol,
+  type LlmVendor,
 } from '@/services/llm-providers-api';
 import { CheckCircle2, Plus, RefreshCw, Server, XCircle } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
-const defaults = {
-  openai: 'https://api.openai.com/v1',
-  anthropic: 'https://api.anthropic.com',
+const vendorProtocols: Record<LlmVendor, LlmProtocol[]> = {
+  openai: ['openai_chat_completions', 'openai_responses'],
+  anthropic: ['anthropic_messages'],
+  opencode_go: ['openai_chat_completions', 'openai_responses'],
+  modelscope: ['openai_chat_completions', 'anthropic_messages'],
+  custom: ['openai_chat_completions', 'openai_responses', 'anthropic_messages'],
+};
+
+const defaultBaseUrl = (vendor: LlmVendor, protocol: LlmProtocol) => {
+  if (vendor === 'openai') return 'https://api.openai.com/v1';
+  if (vendor === 'anthropic') return 'https://api.anthropic.com';
+  if (vendor === 'opencode_go') return 'https://opencode.ai/zen/go/v1';
+  if (vendor === 'modelscope') {
+    return protocol === 'anthropic_messages'
+      ? 'https://api-inference.modelscope.cn'
+      : 'https://api-inference.modelscope.cn/v1';
+  }
+  return '';
+};
+
+const protocolLabels: Record<LlmProtocol, string> = {
+  openai_chat_completions: 'OpenAI Chat Completions',
+  openai_responses: 'OpenAI Responses',
+  anthropic_messages: 'Anthropic Messages',
 };
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -22,8 +45,9 @@ export function LlmProvidersSettings() {
   const [creating, setCreating] = useState(false);
   const [models, setModels] = useState<LlmProviderModel[]>([]);
   const [name, setName] = useState('');
-  const [providerType, setProviderType] = useState<'openai' | 'anthropic'>('openai');
-  const [baseUrl, setBaseUrl] = useState(defaults.openai);
+  const [vendor, setVendor] = useState<LlmVendor>('openai');
+  const [protocol, setProtocol] = useState<LlmProtocol>('openai_chat_completions');
+  const [baseUrl, setBaseUrl] = useState(defaultBaseUrl('openai', 'openai_chat_completions'));
   const [apiKey, setApiKey] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [manualModel, setManualModel] = useState('');
@@ -58,7 +82,8 @@ export function LlmProvidersSettings() {
   useEffect(() => {
     if (!selected || creating) return;
     setName(selected.name);
-    setProviderType(selected.provider_type);
+    setVendor(selected.vendor);
+    setProtocol(selected.protocol);
     setBaseUrl(selected.base_url);
     setApiKey('');
     setEnabled(selected.enabled);
@@ -69,8 +94,9 @@ export function LlmProvidersSettings() {
     setCreating(true);
     setSelectedId(null);
     setName('');
-    setProviderType('openai');
-    setBaseUrl(defaults.openai);
+    setVendor('openai');
+    setProtocol('openai_chat_completions');
+    setBaseUrl(defaultBaseUrl('openai', 'openai_chat_completions'));
     setApiKey('');
     setEnabled(true);
     setModels([]);
@@ -84,7 +110,7 @@ export function LlmProvidersSettings() {
     try {
       let saved: LlmProviderConnection;
       if (creating) {
-        saved = await llmProvidersApi.create({ name, provider_type: providerType, base_url: baseUrl, api_key: apiKey, enabled });
+        saved = await llmProvidersApi.create({ name, vendor, protocol, base_url: baseUrl, api_key: apiKey, enabled });
       } else if (selected) {
         saved = await llmProvidersApi.update(selected.id, {
           name, base_url: baseUrl, enabled, ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
@@ -98,7 +124,7 @@ export function LlmProvidersSettings() {
       savedBeforeTest = true;
       if (andTest) {
         const result = await llmProvidersApi.test(saved.id);
-        setMessage(`Connection saved and verified. ${result.model_count} models reported.`);
+        setMessage(`Connection saved and model catalog verified. ${result.model_count} models reported.`);
         await loadProviders(saved.id);
       } else {
         setMessage('Connection saved.');
@@ -159,7 +185,7 @@ export function LlmProvidersSettings() {
         <div>
           <h2 className="text-xl font-semibold text-primary mb-2">LLM Providers</h2>
           <p className="text-sm text-muted-foreground">
-            Configure OpenAI or Anthropic connections, then synchronize the models available to simulations.
+            Configure a vendor and wire protocol, then synchronize the models available to simulations.
           </p>
         </div>
         <Button onClick={beginCreate}><Plus className="h-4 w-4 mr-2" />Add Provider</Button>
@@ -180,7 +206,7 @@ export function LlmProvidersSettings() {
                 <span className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                   {provider.last_test_status === 'success' ? <CheckCircle2 className="h-3 w-3 text-green-500" /> :
                     provider.last_test_status === 'failed' ? <XCircle className="h-3 w-3 text-red-500" /> : <Server className="h-3 w-3" />}
-                  {provider.provider_type} · {provider.enabled ? 'enabled' : 'disabled'}
+                  {provider.vendor} / {protocolLabels[provider.protocol]} · {provider.enabled ? 'enabled' : 'disabled'}
                 </span>
               </button>
             ))}
@@ -192,26 +218,56 @@ export function LlmProvidersSettings() {
             <Card>
               <CardHeader><CardTitle className="text-base">{creating ? 'New Connection' : 'Connection Details'}</CardTitle></CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div><label className="text-sm mb-1 block">Name</label><Input value={name} onChange={event => setName(event.target.value)} placeholder="OpenAI Official" /></div>
                   <div>
-                    <label className="text-sm mb-1 block">Protocol</label>
+                    <label className="text-sm mb-1 block">Vendor</label>
                     <select
-                      value={providerType}
+                      value={vendor}
                       disabled={!creating}
                       onChange={event => {
-                        const next = event.target.value as 'openai' | 'anthropic';
-                        setProviderType(next);
-                        setBaseUrl(defaults[next]);
+                        const nextVendor = event.target.value as LlmVendor;
+                        const nextProtocol = vendorProtocols[nextVendor][0];
+                        setVendor(nextVendor);
+                        setProtocol(nextProtocol);
+                        setBaseUrl(defaultBaseUrl(nextVendor, nextProtocol));
                       }}
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     >
                       <option value="openai">OpenAI</option>
                       <option value="anthropic">Anthropic</option>
+                      <option value="opencode_go">OpenCode Go</option>
+                      <option value="modelscope">ModelScope</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-sm mb-1 block">Protocol</label>
+                    <select
+                      value={protocol}
+                      disabled={!creating}
+                      onChange={event => {
+                        const next = event.target.value as LlmProtocol;
+                        setProtocol(next);
+                        setBaseUrl(defaultBaseUrl(vendor, next));
+                      }}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      {vendorProtocols[vendor].map(item => (
+                        <option key={item} value={item}>{protocolLabels[item]}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
-                <div><label className="text-sm mb-1 block">Base URL</label><Input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} /></div>
+                <div>
+                  <label className="text-sm mb-1 block">Base URL</label>
+                  <Input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} />
+                  {vendor === 'opencode_go' && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      OpenCode Go mode is for endpoints compatible with its special User-Agent and per-simulation x-opencode-session headers. The Base URL may be the official service or a compatible proxy.
+                    </p>
+                  )}
+                </div>
                 <div>
                   <label className="text-sm mb-1 block">API Key</label>
                   <Input type="password" value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder={creating ? 'Required' : `Leave blank to keep ${selected?.api_key_masked || 'current key'}`} />
@@ -227,7 +283,7 @@ export function LlmProvidersSettings() {
                 {selected?.last_error && <p className="text-xs text-red-500">Last test: {selected.last_error}</p>}
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={() => save(false)} disabled={busy || !name.trim() || (creating && !apiKey.trim())}>Save</Button>
-                  <Button variant="outline" onClick={() => save(true)} disabled={busy || !name.trim() || (creating && !apiKey.trim())}>Save & Test</Button>
+                  <Button variant="outline" onClick={() => save(true)} disabled={busy || !name.trim() || (creating && !apiKey.trim())}>Save & Test Model Catalog</Button>
                   {!creating && <Button variant="outline" onClick={sync} disabled={busy}><RefreshCw className={`h-4 w-4 mr-2 ${busy ? 'animate-spin' : ''}`} />Sync Models</Button>}
                 </div>
               </CardContent>
@@ -238,6 +294,16 @@ export function LlmProvidersSettings() {
             <Card>
               <CardHeader><CardTitle className="text-base">Models</CardTitle></CardHeader>
               <CardContent className="space-y-3">
+                {selected.vendor === 'opencode_go' && selected.protocol === 'openai_chat_completions' && (
+                  <p className="text-xs text-muted-foreground">
+                    The latest successful /models response determines availability. Enable only models that support Chat Completions on this connection.
+                  </p>
+                )}
+                {selected.vendor === 'opencode_go' && selected.protocol === 'openai_responses' && (
+                  <p className="text-xs text-muted-foreground">
+                    The latest successful /models response determines availability. Enable only models that support the Responses API on this connection.
+                  </p>
+                )}
                 <div className="flex gap-2">
                   <Input value={manualModel} onChange={event => setManualModel(event.target.value)} placeholder="Custom model ID" />
                   <Button variant="outline" onClick={addModel} disabled={busy || !manualModel.trim()}>Add</Button>

@@ -3,74 +3,23 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
+from v2.llm.adapter_registry import validate_vendor_protocol
+from v2.llm.base import ChatLLM, LLMClient, ResponsesLLM, normalize_response_content
 from v2.llm.registry import PROVIDERS, normalize_provider, provider_spec, validate_selection
-
-
-@runtime_checkable
-class LLMClient(Protocol):
-    provider: str
-    model: str
-
-    @property
-    def identity(self) -> str: ...
-
-    def complete(self, system: str, user: str) -> str: ...
-
-
-def _block_value(block: Any, name: str) -> Any:
-    return block.get(name) if isinstance(block, dict) else getattr(block, name, None)
-
-
-def normalize_response_content(content: Any, separator: str = "\n") -> str:
-    """Keep answer text while discarding reasoning and tool blocks."""
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    if isinstance(content, dict) or _block_value(content, "type") is not None:
-        return normalize_response_content([content], separator=separator)
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-                continue
-            if _block_value(block, "type") not in {"text", "output_text"}:
-                continue
-            value = _block_value(block, "text")
-            if isinstance(value, dict):
-                value = value.get("value", "")
-            elif value is not None and not isinstance(value, str):
-                value = getattr(value, "value", "")
-            if value:
-                parts.append(str(value))
-        return separator.join(parts)
-    return str(content)
-
-
-class ChatLLM:
-    def __init__(self, provider: str, model: str, chat: Any) -> None:
-        self.provider = provider
-        self.model = model
-        self._chat = chat
-
-    @property
-    def identity(self) -> str:
-        return f"{self.provider}:{self.model}"
-
-    def complete(self, system: str, user: str) -> str:
-        result = self._chat.invoke([("system", system), ("human", user)])
-        text = normalize_response_content(result.content)
-        if not text.strip():
-            raise ValueError(f"{self.provider} returned an empty text response")
-        return text
+from v2.llm.types import LlmProtocol, LlmRuntimeConfig
 
 
 def credential_from_environment(provider: str) -> str | None:
     spec = provider_spec(provider)
     return next((os.getenv(name) for name in spec.credential_names if os.getenv(name)), None)
+
+
+def make_connection_llm(config: LlmRuntimeConfig) -> LLMClient:
+    """Compose one vendor policy with one wire-protocol implementation."""
+    vendor, protocol = validate_vendor_protocol(config.vendor, config.protocol)
+    return protocol.create_client(config, vendor)
 
 
 def make_llm(
@@ -81,7 +30,8 @@ def make_llm(
     allow_unregistered_model: bool = False,
     timeout: float = 60.0,
     max_tokens: int = 4096,
-) -> ChatLLM:
+    session_id: str | None = None,
+) -> LLMClient:
     if allow_unregistered_model:
         provider_id = normalize_provider(provider)
         model_id = model.strip()
@@ -97,13 +47,40 @@ def make_llm(
             f"{spec.display_name} credential is missing. Configure {names} in Settings or the environment."
         )
 
-    if provider_id == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-        chat = ChatAnthropic(
-            model=model_id, api_key=api_key, base_url=base_url,
-            timeout=timeout, max_retries=1, max_tokens=max_tokens,
+    managed = {
+        "openai": ("openai", LlmProtocol.OPENAI_CHAT),
+        "anthropic": ("anthropic", LlmProtocol.ANTHROPIC_MESSAGES),
+        "opencode_go": ("opencode_go", LlmProtocol.OPENAI_CHAT),
+        "opencode_go_responses": ("opencode_go", LlmProtocol.OPENAI_RESPONSES),
+        "modelscope": ("modelscope", LlmProtocol.OPENAI_CHAT),
+    }
+    if provider_id in managed:
+        vendor_id, protocol_id = managed[provider_id]
+        vendor, _ = validate_vendor_protocol(vendor_id, protocol_id)
+        resolved_base_url = base_url
+        if provider_id == "openai":
+            resolved_base_url = resolved_base_url or os.getenv("OPENAI_API_BASE")
+        elif provider_id == "modelscope":
+            resolved_base_url = (
+                resolved_base_url or os.getenv("MODELSCOPE_BASE_URL")
+                or os.getenv("V2_LLM_BASE_URL")
+            )
+        normalized_base_url = vendor.normalize_base_url(
+            resolved_base_url or "", protocol_id,
         )
-    elif provider_id == "deepseek":
+        resolved_session_id = session_id or vendor.new_session_id()
+        return make_connection_llm(LlmRuntimeConfig(
+            vendor=vendor_id,
+            protocol=protocol_id,
+            model=model_id,
+            base_url=normalized_base_url,
+            api_key=api_key or "",
+            session_id=resolved_session_id,
+            timeout=timeout,
+            max_tokens=max_tokens,
+        ))
+
+    if provider_id == "deepseek":
         from langchain_deepseek import ChatDeepSeek
         chat = ChatDeepSeek(model=model_id, api_key=api_key, timeout=timeout, max_retries=1, max_tokens=max_tokens)
     elif provider_id == "google":
@@ -128,21 +105,19 @@ def make_llm(
             "model": model_id, "api_key": api_key, "timeout": timeout,
             "max_retries": 1, "max_tokens": max_tokens,
         }
-        if provider_id == "openai":
-            kwargs["base_url"] = base_url or os.getenv("OPENAI_API_BASE")
-        elif provider_id == "openrouter":
+        if provider_id == "openrouter":
             kwargs["base_url"] = os.getenv("OPENROUTER_BASE_URL") or os.getenv("V2_LLM_BASE_URL") or spec.base_url
             kwargs["default_headers"] = {
                 "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "https://github.com/virattt/ai-hedge-fund"),
                 "X-Title": os.getenv("OPENROUTER_APP_NAME", "AI Hedge Fund Simulation"),
             }
-        elif provider_id == "modelscope":
-            kwargs["base_url"] = os.getenv("MODELSCOPE_BASE_URL") or os.getenv("V2_LLM_BASE_URL") or spec.base_url
-            kwargs["extra_body"] = {"enable_thinking": False}
         elif provider_id == "kimi":
             kwargs["base_url"] = os.getenv("MOONSHOT_BASE_URL") or os.getenv("KIMI_BASE_URL") or spec.base_url
         chat = ChatOpenAI(**kwargs)
-    return ChatLLM(provider_id, model_id, chat)
+    return ChatLLM(
+        provider_id, LlmProtocol.OPENAI_CHAT.value, model_id, chat,
+        session_id=session_id,
+    )
 
 
 def get_llm() -> LLMClient:

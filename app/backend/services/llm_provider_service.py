@@ -4,66 +4,93 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import ipaddress
-from urllib.parse import urlparse
 
-import httpx
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.backend.database.connection import Base, engine
 from app.backend.database.models import ApiKey, LlmProviderConnection, LlmProviderModel
-from v2.llm.registry import models_for
+from v2.llm.adapter_registry import validate_vendor_protocol
+from v2.llm.registry import (
+    connection_kind_for_legacy,
+    legacy_provider_type,
+    models_for_connection,
+)
+from v2.llm.types import LlmProtocol, LlmRuntimeConfig
 
 
-SUPPORTED_PROVIDER_TYPES = {"openai", "anthropic"}
+SUPPORTED_PROVIDER_TYPES = {
+    "openai", "openai_responses", "anthropic", "opencode_go",
+    "opencode_go_responses", "modelscope", "modelscope_anthropic",
+}
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com",
+    "opencode_go": "https://opencode.ai/zen/go/v1",
+    "opencode_go_responses": "https://opencode.ai/zen/go/v1",
+    "modelscope": "https://api-inference.modelscope.cn/v1",
+    "modelscope_anthropic": "https://api-inference.modelscope.cn",
 }
 LEGACY_KEYS = {
     "openai": ("OPENAI_API_KEY", "OpenAI Default"),
     "anthropic": ("ANTHROPIC_API_KEY", "Anthropic Default"),
 }
 
-
 @dataclass(frozen=True)
 class ProviderConnectionSnapshot:
     id: int
     name: str
-    provider_type: str
+    vendor: str
+    protocol: str
     base_url: str
     api_key: str
+
+    @property
+    def provider_type(self) -> str:
+        """Legacy discriminator retained for old API callers."""
+        return legacy_provider_type(self.vendor, self.protocol)
 
 
 def ensure_provider_tables(db: Session | None = None) -> None:
     Base.metadata.create_all(bind=db.get_bind() if db is not None else engine)
     if db is not None:
+        _ensure_connection_columns(db)
         migrate_legacy_connections(db)
+        migrate_connection_kinds(db)
+
+
+def _ensure_connection_columns(db: Session) -> None:
+    """Add the two new columns for installs that do not invoke Alembic."""
+    columns = {
+        column["name"]
+        for column in inspect(db.get_bind()).get_columns("llm_provider_connections")
+    }
+    changed = False
+    if "vendor" not in columns:
+        db.execute(text(
+            "ALTER TABLE llm_provider_connections ADD COLUMN vendor VARCHAR(32)"
+        ))
+        changed = True
+    if "protocol" not in columns:
+        db.execute(text(
+            "ALTER TABLE llm_provider_connections ADD COLUMN protocol VARCHAR(40)"
+        ))
+        changed = True
+    if changed:
+        db.commit()
+
+
+def normalize_connection_base_url(
+    value: str, vendor: str, protocol: str,
+) -> str:
+    vendor_adapter, _ = validate_vendor_protocol(vendor, protocol)
+    return vendor_adapter.normalize_base_url(value, LlmProtocol(protocol))
 
 
 def normalize_base_url(value: str, provider_type: str) -> str:
-    provider = provider_type.strip().lower()
-    if provider not in SUPPORTED_PROVIDER_TYPES:
-        raise ValueError("provider_type must be openai or anthropic")
-    raw = value.strip() or DEFAULT_BASE_URLS[provider]
-    parsed = urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("base_url must be an absolute HTTP or HTTPS URL")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("base_url cannot contain credentials, query, or fragment")
-    if parsed.scheme == "http" and not _is_local_http_host(parsed.hostname):
-        raise ValueError("public LLM endpoints must use HTTPS")
-    return raw.rstrip("/")
-
-
-def _is_local_http_host(host: str) -> bool:
-    if host.lower() == "localhost":
-        return True
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return address.is_loopback or address.is_private
+    """Compatibility wrapper for old provider_type callers."""
+    vendor, protocol = connection_kind_for_legacy(provider_type)
+    return normalize_connection_base_url(value, vendor, protocol)
 
 
 def migrate_legacy_connections(db: Session) -> None:
@@ -81,6 +108,8 @@ def migrate_legacy_connections(db: Session) -> None:
         if legacy and legacy.key_value:
             db.add(LlmProviderConnection(
                 name=connection_name,
+                vendor=provider,
+                protocol=connection_kind_for_legacy(provider)[1],
                 provider_type=provider,
                 base_url=DEFAULT_BASE_URLS[provider],
                 api_key=legacy.key_value,
@@ -89,16 +118,44 @@ def migrate_legacy_connections(db: Session) -> None:
     db.commit()
 
 
+def migrate_connection_kinds(db: Session) -> None:
+    """Idempotently backfill vendor/protocol for pre-split connection rows."""
+    rows = db.query(LlmProviderConnection).all()
+    changed = False
+    for row in rows:
+        try:
+            vendor, protocol = connection_kind_for_legacy(row.provider_type)
+        except ValueError:
+            vendor, protocol = row.provider_type, LlmProtocol.OPENAI_CHAT.value
+        if not row.vendor:
+            row.vendor = vendor
+            changed = True
+        if not row.protocol:
+            row.protocol = protocol
+            changed = True
+    if changed:
+        db.commit()
+
+
+def connection_kind(connection: LlmProviderConnection) -> tuple[str, str]:
+    if connection.vendor and connection.protocol:
+        return connection.vendor, connection.protocol
+    return connection_kind_for_legacy(connection.provider_type)
+
+
 def mask_key(value: str) -> str:
     suffix = value[-4:] if value else ""
     return f"••••{suffix}" if suffix else ""
 
 
 def connection_dict(connection: LlmProviderConnection) -> dict:
+    vendor, protocol = connection_kind(connection)
     return {
         "id": connection.id,
         "name": connection.name,
         "provider_type": connection.provider_type,
+        "vendor": vendor,
+        "protocol": protocol,
         "base_url": connection.base_url,
         "enabled": connection.enabled,
         "has_api_key": bool(connection.api_key),
@@ -148,61 +205,33 @@ def resolve_connection(
     ).first()
     if model is None or (model.source == "remote" and not model.available):
         raise ValueError("model is not enabled and available for this connection")
+    vendor, protocol = connection_kind(connection)
+    validate_vendor_protocol(vendor, protocol)
     return ProviderConnectionSnapshot(
         id=connection.id,
         name=connection.name,
-        provider_type=connection.provider_type,
+        vendor=vendor,
+        protocol=protocol,
         base_url=connection.base_url,
         api_key=connection.api_key,
     )
 
 
 async def discover_models(connection: LlmProviderConnection) -> list[dict[str, str]]:
-    headers = {"accept": "application/json"}
-    if connection.provider_type == "openai":
-        headers["authorization"] = f"Bearer {connection.api_key}"
-        url = f"{connection.base_url.rstrip('/')}/models"
-    else:
-        headers["x-api-key"] = connection.api_key
-        headers["anthropic-version"] = "2023-06-01"
-        root = connection.base_url.rstrip("/")
-        url = f"{root}/models" if root.endswith("/v1") else f"{root}/v1/models"
-
-    discovered: dict[str, str] = {}
-    params: dict[str, str | int] = (
-        {"limit": 100} if connection.provider_type == "anthropic" else {}
+    vendor_id, protocol_id = connection_kind(connection)
+    vendor, protocol = validate_vendor_protocol(vendor_id, protocol_id)
+    config = LlmRuntimeConfig(
+        vendor=vendor.id,
+        protocol=protocol.id,
+        model="",
+        base_url=connection.base_url,
+        api_key=connection.api_key,
+        timeout=15.0,
     )
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
-        for _ in range(10):
-            response = await client.get(url, headers=headers, params=params)
-            if 300 <= response.status_code < 400:
-                raise ValueError("model endpoint redirect refused to protect the API key")
-            if response.status_code >= 400:
-                raise ValueError(f"model endpoint returned HTTP {response.status_code}")
-            try:
-                payload = response.json()
-                rows = payload["data"]
-            except (ValueError, KeyError, TypeError) as exc:
-                raise ValueError("model endpoint returned an invalid response") from exc
-            if not isinstance(rows, list):
-                raise ValueError("model endpoint returned an invalid model list")
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                model_id = str(row.get("id", "")).strip()
-                if model_id:
-                    discovered[model_id] = str(row.get("display_name") or model_id)
-            if connection.provider_type != "anthropic" or not payload.get("has_more"):
-                break
-            last_id = payload.get("last_id")
-            if not last_id:
-                break
-            params["after_id"] = str(last_id)
-            if len(discovered) >= 1000:
-                break
+    discovered = await protocol.discover_models(config, vendor)
     return [
-        {"model_id": model_id, "display_name": display_name}
-        for model_id, display_name in sorted(discovered.items())
+        {"model_id": model.model_id, "display_name": model.display_name}
+        for model in discovered
     ]
 
 
@@ -231,7 +260,8 @@ async def sync_models(db: Session, connection: LlmProviderConnection) -> list[Ll
     remote_rows = [row for row in all_rows if row.source == "remote"]
     by_id = {row.model_id: row for row in all_rows}
     discovered_ids = {item["model_id"] for item in discovered}
-    known = {item.model for item in models_for(connection.provider_type)}
+    vendor, protocol = connection_kind(connection)
+    known = {item.model for item in models_for_connection(vendor, protocol)}
     for row in remote_rows:
         row.available = row.model_id in discovered_ids
     for item in discovered:

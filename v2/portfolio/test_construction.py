@@ -74,3 +74,15 @@ def test_all_abstain_yields_flat_book():
     result = blend_signals(signals, {"a": 1.0, "b": 1.0}, gross_target=1.0)
     assert result.convictions == {"AAPL": 0.0}
     assert result.weights == {"AAPL": 0.0}
+
+
+def test_failed_signal_is_not_a_neutral_vote():
+    signals = [
+        _sig("a", "AAPL", 1.0),
+        Signal(
+            model_name="b", ticker="AAPL", date="2024-06-03",
+            value=0.0, status="failed",
+        ),
+    ]
+    result = blend_signals(signals, {"a": 1.0, "b": 1.0}, gross_target=1.0)
+    assert result.convictions == {"AAPL": 1.0}

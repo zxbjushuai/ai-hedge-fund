@@ -90,6 +90,7 @@ def test_value_folding(tmp_path, signal, confidence, expected):
     assert isinstance(sig, Signal)
     assert sig.model_name == "buffett"
     assert sig.value == pytest.approx(expected)
+    assert sig.status == "produced"
     assert sig.metadata["abstained"] is False
 
 
@@ -97,26 +98,48 @@ def test_value_folding(tmp_path, signal, confidence, expected):
 # Failure contract
 # ---------------------------------------------------------------------------
 
-def test_malformed_json_abstains(tmp_path):
+def test_malformed_json_is_a_failed_attempt(tmp_path):
     agent = _agent(tmp_path, FakeLLM("I am bullish, trust me."))
     sig = agent.predict("TEST", "2025-01-15", MockDataClient(metrics=_history()))
     assert sig.value == 0.0
-    assert sig.metadata["abstained"] is True
+    assert sig.status == "failed"
+    assert sig.metadata["abstained"] is False
+    assert sig.failure is not None
+    assert sig.failure.category == "invalid_response"
 
 
-def test_llm_error_abstains(tmp_path):
+def test_llm_timeout_is_a_failed_attempt(tmp_path):
     agent = _agent(tmp_path, FakeLLM(error=TimeoutError("llm timed out")))
     sig = agent.predict("TEST", "2025-01-15", MockDataClient(metrics=_history()))
     assert sig.value == 0.0
-    assert sig.metadata["abstained"] is True
-    assert "timed out" in sig.metadata["abstain_reason"]
+    assert sig.status == "failed"
+    assert sig.metadata["abstained"] is False
+    assert sig.failure is not None
+    assert sig.failure.category == "timeout"
+    assert sig.failure.retryable is True
 
 
 def test_insufficient_data_abstains(tmp_path):
     agent = _agent(tmp_path, FakeLLM(BULLISH))
     sig = agent.predict("TEST", "2025-01-15", MockDataClient(metrics=_history(2)))
     assert sig.value == 0.0
+    assert sig.status == "abstained"
     assert sig.metadata["abstained"] is True
+    assert sig.failure is not None
+    assert sig.failure.category == "insufficient_data"
+
+
+def test_llm_failure_does_not_persist_exception_body(tmp_path):
+    class AuthenticationError(Exception):
+        status_code = 401
+
+    secret = "sk-secret-value"
+    agent = _agent(tmp_path, FakeLLM(error=AuthenticationError(secret)))
+    sig = agent.predict("TEST", "2025-01-15", MockDataClient(metrics=_history()))
+    assert sig.status == "failed"
+    assert sig.failure is not None
+    assert sig.failure.category == "authentication"
+    assert secret not in sig.model_dump_json()
 
 
 def test_data_layer_error_propagates(tmp_path):

@@ -19,13 +19,18 @@ from v2.simulation.runner import SimRunner
 class BarrierLLM:
     def __init__(self, provider: str, model: str, barrier: threading.Barrier) -> None:
         self.provider = provider
+        self.protocol = (
+            "anthropic_messages"
+            if provider == "anthropic"
+            else "openai_chat_completions"
+        )
         self.model = model
         self.barrier = barrier
         self.calls: list[str] = []
 
     @property
     def identity(self) -> str:
-        return f"{self.provider}:{self.model}"
+        return f"{self.provider}:{self.protocol}:{self.model}"
 
     def complete(self, system: str, user: str) -> str:
         self.barrier.wait(timeout=10)
@@ -98,13 +103,17 @@ capital: 1000
         for future in futures:
             future.result(timeout=20)
 
-    assert openai.calls == ["openai:gpt-test"]
-    assert anthropic.calls == ["anthropic:claude-test"]
+    assert openai.calls == ["openai:openai_chat_completions:gpt-test"]
+    assert anthropic.calls == ["anthropic:anthropic_messages:claude-test"]
     assert __import__("os").environ["V2_LLM_PROVIDER"] == "must-not-be-used"
     assert __import__("os").environ["V2_LLM_MODEL"] == "must-not-be-used"
     with get_session(str(tmp_path / "first.db")) as session:
         run = session.execute(select(SimRun).where(SimRun.id == first_id)).scalar_one()
-        assert (run.status, run.llm_provider, run.llm_model) == ("completed", "openai", "gpt-test")
+        assert (run.status, run.llm_provider, run.llm_protocol, run.llm_model) == (
+            "completed", "openai", "openai_chat_completions", "gpt-test",
+        )
     with get_session(str(tmp_path / "second.db")) as session:
         run = session.execute(select(SimRun).where(SimRun.id == second_id)).scalar_one()
-        assert (run.status, run.llm_provider, run.llm_model) == ("completed", "anthropic", "claude-test")
+        assert (run.status, run.llm_provider, run.llm_protocol, run.llm_model) == (
+            "completed", "anthropic", "anthropic_messages", "claude-test",
+        )

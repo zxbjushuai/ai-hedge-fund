@@ -11,8 +11,13 @@ the models actually available from that endpoint.
 
 - Add a v2-owned provider/model registry and a single `make_llm` factory.
 - Normalize text and content-block responses before JSON parsing.
-- Add managed, named OpenAI/Anthropic connections with a Base URL and write-only
-  API key. Multiple connections may use the same protocol.
+- Model a connection as independent `vendor + protocol` fields instead of
+  encoding both concerns in a growing `provider_type` enum. Compose vendor
+  policy with polymorphic OpenAI Chat Completions, OpenAI Responses, or
+  Anthropic Messages transports.
+- Add managed named connections with a Base URL and write-only API key.
+  OpenAI, Anthropic, OpenCode Go, ModelScope, and custom compatible endpoints
+  expose only the protocols each vendor supports.
 - Test connections, synchronize and cache remote model lists, and support manual
   model IDs for compatible endpoints without a Models API.
 - Make provider/model explicit per simulation and inject one run-scoped client
@@ -22,7 +27,7 @@ the models actually available from that endpoint.
 
 ## Scope
 
-The transport registry retains Anthropic, OpenAI, DeepSeek, Google, xAI, Kimi,
-Groq, Ollama, ModelScope, and OpenRouter. Managed connection UI is intentionally
-limited to OpenAI and Anthropic protocols. Streaming, per-persona selection,
-automatic fallback, and full cycle audit are excluded.
+The legacy transport registry retains Anthropic, OpenAI, DeepSeek, Google, xAI,
+Kimi, Groq, Ollama, ModelScope, and OpenRouter. Managed connections use the new
+vendor/protocol composition. Streaming, per-persona selection, automatic
+fallback, and full cycle audit are excluded.

@@ -38,8 +38,8 @@ def blend_signals(
 
         conviction_t = sum(w_m * value_mt) / sum(w_m)
 
-    An abstained signal (metadata.abstained is True — LLM failure or
-    insufficient data) is excluded from numerator AND denominator: "no
+    A signal with status `abstained` or `failed` is excluded from numerator
+    AND denominator: "no
     opinion" must not masquerade as "opinion: neutral". A non-abstained 0.0
     (e.g. PEAD outside its window) is a real neutral vote and dilutes.
 
@@ -61,7 +61,7 @@ def blend_signals(
     weighted_sum: dict[str, float] = {}
     weight_total: dict[str, float] = {}
     for signal in signals:
-        if signal.metadata.get("abstained") is True:
+        if signal.status != "produced" or signal.metadata.get("abstained") is True:
             continue
         w = model_weights[signal.model_name]
         weighted_sum[signal.ticker] = weighted_sum.get(signal.ticker, 0.0) + w * signal.value

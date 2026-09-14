@@ -48,6 +48,7 @@ def _migrate(engine) -> None:
             "models": "TEXT NOT NULL DEFAULT '[]'",
             "benchmark": "VARCHAR(10)",
             "llm_provider": "VARCHAR(32)",
+            "llm_protocol": "VARCHAR(40)",
             "llm_model": "VARCHAR(200)",
             "llm_connection_id": "INTEGER",
             "llm_connection_name": "VARCHAR(100)",

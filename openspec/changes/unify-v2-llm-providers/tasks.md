@@ -16,3 +16,9 @@
 - [x] 14. Add the LLM Providers settings page and two-stage simulation selector.
 - [x] 15. Cover connection migration, security, sync failure, and concurrent isolation.
 - [x] 16. Fix dashboard polling Session leaks that exhausted the SQLite pool and blocked cache/simulation APIs.
+- [x] 17. Add dedicated OpenCode Go connections with one stable session UUID per simulation and Chat Completions transport.
+- [x] 18. Add an OpenCode Go Responses connection type and GPT-5.6 Luna transport, discovery, migration, UI, and live verification.
+- [x] 19. Make successful `/models` snapshots authoritative for availability and separate protocol selection from static model-name filtering.
+- [x] 20. Split managed connection vendor from wire protocol, compose polymorphic adapters, and migrate compound legacy connection types additively.
+- [x] 21. Add ModelScope managed connections for OpenAI Chat Completions and Anthropic Messages and live-test both with a low-active-parameter model.
+- [x] 22. Move legacy OpenCode URL reclassification into Alembic and allow compatible proxy Base URLs while retaining special request headers.

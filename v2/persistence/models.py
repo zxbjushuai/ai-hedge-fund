@@ -159,6 +159,7 @@ class SimRun(Base):
     tickers: Mapped[str] = mapped_column(Text, nullable=False)
     benchmark: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     llm_provider: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    llm_protocol: Mapped[str | None] = mapped_column(String(40), nullable=True, default=None)
     llm_model: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
     llm_connection_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     llm_connection_name: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
@@ -224,4 +225,61 @@ class SimNavSnapshot(Base):
 
     __table_args__ = (
         UniqueConstraint("sim_run_id", "cycle_date", name="uq_sim_nav_snapshot"),
+    )
+
+
+class SimCycleRecord(Base):
+    """Complete serialized decision record, or a categorized failed attempt."""
+
+    __tablename__ = "sim_cycle_record"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sim_run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sim_run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    execution_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    universe: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    cash: Mapped[float | None] = mapped_column(Float, nullable=True)
+    nav: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        String(26), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("sim_run_id", "cycle_number", name="uq_sim_cycle_number"),
+        CheckConstraint("status IN ('completed', 'failed')", name="ck_sim_cycle_status"),
+    )
+
+
+class SimCycleTickerIndex(Base):
+    """Compact ticker index for cycle filtering; details remain in payload."""
+
+    __tablename__ = "sim_cycle_ticker_index"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sim_cycle_record_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sim_cycle_record.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    sim_run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sim_run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ticker: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    produced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    neutral_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    abstained_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    target_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
+    order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fill_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("sim_cycle_record_id", "ticker", name="uq_sim_cycle_ticker"),
     )

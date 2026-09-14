@@ -2,6 +2,7 @@ import type { SimResult } from '@/services/simulation-api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { useMemo } from 'react';
+import { DecisionAudit } from './decision-audit';
 
 interface Props {
   result: SimResult;
@@ -61,6 +62,7 @@ export function SimResults({ result }: Props) {
             ) : null}
             <p className="text-muted-foreground">
               LLM: {result.model ? `${result.llm_connection_name || result.provider || 'N/A'}/${result.model}` : 'N/A'}
+              {result.protocol ? ` (${result.protocol})` : ''}
             </p>
             {result.warnings?.map((warning, index) => (
               <p key={index} className="text-amber-600">Data warning: {warning}</p>
@@ -192,6 +194,7 @@ export function SimResults({ result }: Props) {
           </div>
         </CardContent>
       </Card>
+      <DecisionAudit simId={result.id} auditAvailable={result.audit_available} />
     </div>
   );
 }

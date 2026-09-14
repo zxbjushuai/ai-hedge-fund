@@ -15,7 +15,9 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
 export interface LlmProviderConnection {
   id: number;
   name: string;
-  provider_type: 'openai' | 'anthropic';
+  provider_type: string;
+  vendor: LlmVendor;
+  protocol: LlmProtocol;
   base_url: string;
   enabled: boolean;
   has_api_key: boolean;
@@ -25,6 +27,9 @@ export interface LlmProviderConnection {
   last_error: string | null;
   last_synced_at: string | null;
 }
+
+export type LlmVendor = 'openai' | 'anthropic' | 'opencode_go' | 'modelscope' | 'custom';
+export type LlmProtocol = 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages';
 
 export interface LlmProviderModel {
   id: number;
@@ -39,7 +44,8 @@ export interface LlmProviderModel {
 
 export interface LlmProviderInput {
   name: string;
-  provider_type: 'openai' | 'anthropic';
+  vendor: LlmVendor;
+  protocol: LlmProtocol;
   base_url: string;
   api_key: string;
   enabled: boolean;
@@ -50,7 +56,7 @@ export const llmProvidersApi = {
   create: (data: LlmProviderInput) => jsonRequest<LlmProviderConnection>('/dashboard/llm/providers', {
     method: 'POST', body: JSON.stringify(data),
   }),
-  update: (id: number, data: Partial<Omit<LlmProviderInput, 'provider_type'>>) =>
+  update: (id: number, data: Partial<Omit<LlmProviderInput, 'vendor' | 'protocol'>>) =>
     jsonRequest<LlmProviderConnection>(`/dashboard/llm/providers/${id}`, {
       method: 'PATCH', body: JSON.stringify(data),
     }),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from uuid import UUID
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.backend.database.connection import Base
 from app.backend.database.models import ApiKey, LlmProviderConnection, LlmProviderModel
 from app.backend.services import llm_provider_service as service
+from v2.llm import protocols as protocol_module
 
 
 @pytest.fixture()
@@ -34,6 +36,10 @@ def test_base_url_policy():
         service.normalize_base_url("https://user:pass@example.com/v1", "openai")
     with pytest.raises(ValueError, match="query"):
         service.normalize_base_url("https://example.com/v1?key=secret", "openai")
+    assert service.normalize_base_url("", "opencode_go") == service.DEFAULT_BASE_URLS["opencode_go"]
+    assert service.normalize_base_url("", "opencode_go_responses") == service.DEFAULT_BASE_URLS["opencode_go_responses"]
+    assert service.normalize_base_url("https://proxy.example/v1", "opencode_go") == "https://proxy.example/v1"
+    assert service.normalize_base_url("https://proxy.example/v1", "opencode_go_responses") == "https://proxy.example/v1"
 
 
 def test_legacy_key_migration_is_idempotent_and_does_not_remove_key(db):
@@ -46,6 +52,107 @@ def test_legacy_key_migration_is_idempotent_and_does_not_remove_key(db):
     assert connections[0].name == "OpenAI Default"
     assert connections[0].api_key == "sk-legacy"
     assert db.query(ApiKey).filter_by(provider="OPENAI_API_KEY").one().key_value == "sk-legacy"
+
+
+def test_runtime_backfill_does_not_infer_vendor_from_base_url(db):
+    row = LlmProviderConnection(
+        name="Existing Go", provider_type="openai",
+        base_url="https://opencode.ai/zen/go/v1/", api_key="secret",
+    )
+    db.add(row)
+    db.flush()
+    db.add(LlmProviderModel(
+        connection_id=row.id, model_id="gpt-5.6-luna", display_name="GPT",
+        source="remote", enabled=True, available=True,
+    ))
+    db.commit()
+
+    service.migrate_connection_kinds(db)
+    service.migrate_connection_kinds(db)
+
+    db.refresh(row)
+    assert row.provider_type == "openai"
+    assert row.vendor == "openai"
+    assert row.protocol == "openai_chat_completions"
+    assert row.api_key == "secret"
+    cached = db.query(LlmProviderModel).filter_by(
+        connection_id=row.id, model_id="gpt-5.6-luna",
+    ).one()
+    assert cached.enabled is True
+    assert cached.available is True
+
+
+def test_database_migration_reclassifies_only_legacy_official_go_url(db, monkeypatch):
+    from importlib import import_module
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    official = LlmProviderConnection(
+        name="Legacy Official Go",
+        provider_type="openai",
+        vendor="openai",
+        protocol="openai_chat_completions",
+        base_url="https://opencode.ai/zen/go/v1/",
+        api_key="official-secret",
+    )
+    proxy = LlmProviderConnection(
+        name="OpenAI-compatible Proxy",
+        provider_type="openai",
+        vendor="openai",
+        protocol="openai_chat_completions",
+        base_url="https://proxy.example/v1",
+        api_key="proxy-secret",
+    )
+    db.add_all([official, proxy])
+    db.commit()
+
+    migration = import_module(
+        "app.backend.alembic.versions."
+        "b7d9e2a4c631_migrate_legacy_opencode_go_connections"
+    )
+    operations = Operations(MigrationContext.configure(db.connection()))
+    monkeypatch.setattr(migration, "op", operations)
+    migration.upgrade()
+    db.expire_all()
+
+    assert official.provider_type == "opencode_go"
+    assert official.vendor == "opencode_go"
+    assert official.protocol == "openai_chat_completions"
+    assert official.api_key == "official-secret"
+    assert proxy.provider_type == "openai"
+    assert proxy.vendor == "openai"
+    assert proxy.api_key == "proxy-secret"
+
+
+def test_go_responses_legacy_connection_is_backfilled_without_cloning(db):
+    source = LlmProviderConnection(
+        name="Existing Go Responses", provider_type="opencode_go_responses",
+        base_url=service.DEFAULT_BASE_URLS["opencode_go_responses"], api_key="secret",
+        enabled=True,
+    )
+    db.add(source)
+    db.flush()
+    db.add(LlmProviderModel(
+        connection_id=source.id, model_id="gpt-5.6-luna", display_name="GPT",
+        source="remote", enabled=False, available=False,
+    ))
+    db.commit()
+
+    service.migrate_connection_kinds(db)
+    service.migrate_connection_kinds(db)
+
+    targets = db.query(LlmProviderConnection).filter_by(
+        vendor="opencode_go", protocol="openai_responses",
+    ).all()
+    assert len(targets) == 1
+    assert db.query(LlmProviderConnection).count() == 1
+    assert targets[0].api_key == "secret"
+    model = db.query(LlmProviderModel).filter_by(
+        connection_id=targets[0].id, model_id="gpt-5.6-luna",
+    ).one()
+    assert model.enabled is False
+    assert model.available is False
 
 
 def test_connection_response_never_exposes_secret(db):
@@ -167,6 +274,7 @@ def test_provider_crud_and_options_never_return_key(db):
     options = dashboard.llm_options(db)
     assert options == {"providers": [{
         "id": created["id"], "name": "Official Renamed", "provider_type": "openai",
+        "vendor": "openai", "protocol": "openai_chat_completions",
         "models": [{"model_id": "gpt-private", "display_name": "gpt-private"}],
     }]}
 
@@ -189,13 +297,13 @@ def test_managed_resolution_passes_immutable_connection_values(db, monkeypatch):
     ))
     db.commit()
     monkeypatch.setattr(connection_module, "SessionLocal", lambda: db)
-    captured = {}
+    captured = []
 
-    def fake_make(provider, model, **kwargs):
-        captured.update(provider=provider, model=model, **kwargs)
-        return SimpleNamespace(provider=provider, model=model)
+    def fake_make(config):
+        captured.append(config)
+        return SimpleNamespace(provider=config.vendor, protocol=config.protocol.value, model=config.model)
 
-    monkeypatch.setattr(v2.llm, "make_llm", fake_make)
+    monkeypatch.setattr(v2.llm, "make_connection_llm", fake_make)
     request = dashboard.SimRunRequest(
         tickers=["AAPL"], start_date="2025-01-01", end_date="2025-01-02",
         initial_capital=1000, llm_connection_id=connection.id, model="private/model",
@@ -204,10 +312,59 @@ def test_managed_resolution_passes_immutable_connection_values(db, monkeypatch):
     assert (resolved.connection_id, resolved.connection_name, resolved.base_url) == (
         connection.id, "Proxy", "https://proxy.example/v1",
     )
-    assert captured == {
-        "provider": "openai", "model": "private/model", "credential": "connection-secret",
-        "base_url": "https://proxy.example/v1", "allow_unregistered_model": True,
-    }
+    assert len(captured) == 1
+    assert captured[0].vendor == "openai"
+    assert captured[0].protocol.value == "openai_chat_completions"
+    assert captured[0].model == "private/model"
+    assert captured[0].api_key == "connection-secret"
+    assert captured[0].base_url == "https://proxy.example/v1"
+
+
+@pytest.mark.parametrize(("provider_type", "model_id"), [
+    ("opencode_go", "deepseek-v4-flash"),
+    ("opencode_go_responses", "gpt-5.6-luna"),
+])
+def test_opencode_go_resolution_creates_a_new_session_for_each_simulation(
+    db, monkeypatch, provider_type, model_id,
+):
+    from types import SimpleNamespace
+    from app.backend.routes import dashboard
+    import app.backend.database.connection as connection_module
+    import v2.llm
+
+    connection = LlmProviderConnection(
+        name=f"Go {provider_type}", provider_type=provider_type,
+        base_url=service.DEFAULT_BASE_URLS[provider_type],
+        api_key="connection-secret", enabled=True,
+    )
+    db.add(connection)
+    db.flush()
+    db.add(LlmProviderModel(
+        connection_id=connection.id, model_id=model_id,
+        display_name=model_id, source="remote",
+        enabled=True, available=True,
+    ))
+    db.commit()
+    monkeypatch.setattr(connection_module, "SessionLocal", lambda: db)
+    captured = []
+
+    def fake_make(config):
+        captured.append(config)
+        return SimpleNamespace(provider=config.vendor, protocol=config.protocol.value, model=config.model)
+
+    monkeypatch.setattr(v2.llm, "make_connection_llm", fake_make)
+    request = dashboard.SimRunRequest(
+        tickers=["AAPL"], start_date="2025-01-01", end_date="2025-01-02",
+        initial_capital=1000, llm_connection_id=connection.id,
+        model=model_id,
+    )
+    first = dashboard._resolve_simulation_llm(request, required=True)
+    second = dashboard._resolve_simulation_llm(request, required=True)
+
+    assert first.session_id != second.session_id
+    assert captured[0].session_id == first.session_id
+    assert captured[1].session_id == second.session_id
+    assert str(UUID(first.session_id)) == first.session_id
 
 
 def test_concurrent_managed_clients_do_not_mix_base_urls_or_keys(monkeypatch):
@@ -241,7 +398,10 @@ def test_concurrent_managed_clients_do_not_mix_base_urls_or_keys(monkeypatch):
                 ("model-b", "key-b", "https://b.example/v1"),
             ],
         ))
-    assert {client.identity for client in clients} == {"openai:model-a", "openai:model-b"}
+    assert {client.identity for client in clients} == {
+        "openai:openai_chat_completions:model-a",
+        "openai:openai_chat_completions:model-b",
+    }
     assert {(call["model"], call["api_key"], call["base_url"]) for call in calls} == {
         ("model-a", "key-a", "https://a.example/v1"),
         ("model-b", "key-b", "https://b.example/v1"),
@@ -264,7 +424,7 @@ def test_openai_model_discovery_uses_configured_api_root(monkeypatch):
             requests.append((url, headers, params))
             return Response()
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(protocol_module.httpx, "AsyncClient", Client)
     connection = LlmProviderConnection(
         name="OpenAI", provider_type="openai",
         base_url="https://proxy.example/v1", api_key="secret",
@@ -273,6 +433,131 @@ def test_openai_model_discovery_uses_configured_api_root(monkeypatch):
     assert [item["model_id"] for item in result] == ["gpt-a", "gpt-b"]
     assert requests[0][0] == "https://proxy.example/v1/models"
     assert requests[0][1]["authorization"] == "Bearer secret"
+
+
+def test_opencode_go_discovery_uses_complete_remote_snapshot(monkeypatch):
+    requests = []
+
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"data": [
+                {"id": "deepseek-v4-flash"},
+                {"id": "deepseek-v4.1-flash"},
+                {"id": "gpt-5.6-luna"},
+                {"id": "qwen3.8-max"},
+            ]}
+
+    class Client:
+        def __init__(self, **_kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): pass
+        async def get(self, url, headers, params):
+            requests.append((url, headers, params))
+            return Response()
+
+    monkeypatch.setattr(protocol_module.httpx, "AsyncClient", Client)
+    connection = LlmProviderConnection(
+        name="Go", provider_type="opencode_go",
+        base_url=service.DEFAULT_BASE_URLS["opencode_go"], api_key="secret",
+    )
+    result = asyncio.run(service.discover_models(connection))
+
+    assert [item["model_id"] for item in result] == [
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+        "gpt-5.6-luna",
+        "qwen3.8-max",
+    ]
+    assert requests[0][0].endswith("/v1/models")
+    assert requests[0][1]["authorization"] == "Bearer secret"
+    assert requests[0][1]["User-Agent"] == "ai-hedge-fund/2.0"
+
+
+def test_opencode_go_responses_discovery_uses_complete_remote_snapshot(monkeypatch):
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"data": [
+                {"id": "deepseek-v4-flash"},
+                {"id": "gpt-5.6-luna"},
+                {"id": "grok-4.6"},
+            ]}
+
+    class Client:
+        def __init__(self, **_kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): pass
+        async def get(self, url, headers, params): return Response()
+
+    monkeypatch.setattr(protocol_module.httpx, "AsyncClient", Client)
+    connection = LlmProviderConnection(
+        name="Go Responses", provider_type="opencode_go_responses",
+        base_url=service.DEFAULT_BASE_URLS["opencode_go_responses"],
+        api_key="secret",
+    )
+    result = asyncio.run(service.discover_models(connection))
+
+    assert [item["model_id"] for item in result] == [
+        "deepseek-v4-flash", "gpt-5.6-luna", "grok-4.6",
+    ]
+
+
+def test_opencode_go_sync_uses_latest_successful_snapshot(db, monkeypatch):
+    connection = LlmProviderConnection(
+        name="Go", provider_type="opencode_go",
+        base_url=service.DEFAULT_BASE_URLS["opencode_go"], api_key="secret",
+    )
+    db.add(connection)
+    db.flush()
+    db.add_all([
+        LlmProviderModel(
+            connection_id=connection.id, model_id="retired-model",
+            display_name="Retired", source="remote", enabled=True, available=True,
+        ),
+        LlmProviderModel(
+            connection_id=connection.id, model_id="private-model",
+            display_name="Private", source="manual", enabled=True, available=True,
+        ),
+    ])
+    db.commit()
+
+    async def latest_snapshot(_connection):
+        return [
+            {"model_id": "deepseek-v4.1-flash", "display_name": "DeepSeek V4.1 Flash"},
+            {"model_id": "new-unknown", "display_name": "New Unknown"},
+        ]
+
+    monkeypatch.setattr(service, "discover_models", latest_snapshot)
+    rows = asyncio.run(service.sync_models(db, connection))
+    by_id = {row.model_id: row for row in rows}
+
+    assert by_id["deepseek-v4.1-flash"].available is True
+    assert by_id["deepseek-v4.1-flash"].enabled is True
+    assert by_id["new-unknown"].available is True
+    assert by_id["new-unknown"].enabled is False
+    assert by_id["retired-model"].available is False
+    assert by_id["private-model"].available is True
+
+
+def test_enabled_remote_model_uses_connection_protocol_without_static_whitelist(db):
+    connection = LlmProviderConnection(
+        name="Go", provider_type="opencode_go",
+        base_url=service.DEFAULT_BASE_URLS["opencode_go"], api_key="secret",
+        enabled=True,
+    )
+    db.add(connection)
+    db.flush()
+    db.add(LlmProviderModel(
+        connection_id=connection.id, model_id="future-chat-model",
+        display_name="Future Chat Model", source="remote",
+        enabled=True, available=True,
+    ))
+    db.commit()
+
+    snapshot = service.resolve_connection(db, connection.id, "future-chat-model")
+
+    assert snapshot.provider_type == "opencode_go"
 
 
 def test_anthropic_model_discovery_follows_cursor_pagination(monkeypatch):
@@ -295,7 +580,7 @@ def test_anthropic_model_discovery_follows_cursor_pagination(monkeypatch):
             requests.append((url, headers.copy(), params.copy()))
             return Response(payloads[len(requests) - 1])
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(protocol_module.httpx, "AsyncClient", Client)
     connection = LlmProviderConnection(
         name="Anthropic", provider_type="anthropic",
         base_url="https://api.anthropic.com", api_key="secret",

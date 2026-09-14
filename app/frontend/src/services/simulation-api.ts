@@ -65,7 +65,9 @@ export interface LlmProviderOption {
 export interface LlmConnectionOption {
   id: number;
   name: string;
-  provider_type: 'openai' | 'anthropic';
+  provider_type: string;
+  vendor: 'openai' | 'anthropic' | 'opencode_go' | 'modelscope' | 'custom';
+  protocol: 'openai_chat_completions' | 'openai_responses' | 'anthropic_messages';
   models: { model_id: string; display_name: string }[];
 }
 
@@ -91,6 +93,7 @@ export interface SimStatus {
   warnings?: string[];
   models?: string[];
   provider: string | null;
+  protocol: string | null;
   model: string | null;
   llm_connection_id: number | null;
   llm_connection_name: string | null;
@@ -125,6 +128,7 @@ export interface SimResult {
   initial_capital: number;
   benchmark: string | null;
   provider: string | null;
+  protocol: string | null;
   model: string | null;
   llm_connection_id: number | null;
   llm_connection_name: string | null;
@@ -146,6 +150,85 @@ export interface SimResult {
   completed_at?: string | null;
   warnings?: string[];
   models?: string[];
+  audit_available: boolean;
+}
+
+export interface CycleTickerAudit {
+  ticker: string;
+  produced_count: number;
+  neutral_count: number;
+  abstained_count: number;
+  failed_count: number;
+  target_weight: number | null;
+  final_weight: number | null;
+  order_count: number;
+  fill_count: number;
+}
+
+export interface CycleAuditSummary {
+  id: number;
+  sim_run_id: number;
+  cycle_number: number;
+  signal_date: string;
+  execution_date: string;
+  status: 'completed' | 'failed';
+  universe: string[];
+  error_category: string | null;
+  error_message: string | null;
+  cash: number | null;
+  nav: number | null;
+  tickers: CycleTickerAudit[];
+}
+
+export interface AuditedSignal {
+  model_name: string;
+  ticker: string;
+  date: string;
+  value: number;
+  status: 'produced' | 'abstained' | 'failed';
+  failure: { category: string; message: string; retryable: boolean } | null;
+  reasoning: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CycleRecordAudit {
+  fund: string;
+  as_of: string;
+  execution_date: string | null;
+  universe: string[];
+  marks: Record<string, number>;
+  execution_prices: Record<string, number>;
+  valuation_prices: Record<string, number>;
+  skipped: { ticker: string; reason: string }[];
+  strategies: {
+    name: string;
+    slice: number;
+    signals: AuditedSignal[];
+    convictions: Record<string, number>;
+    weights: Record<string, number>;
+  }[];
+  target_weights: Record<string, number>;
+  clamps: { limit: string; ticker: string | null; before: number; after: number }[];
+  final_weights: Record<string, number>;
+  equity_before: number;
+  cash_before: number;
+  orders: { ticker: string; side: string; quantity: number; price: number }[];
+  fills: { ticker: string; side: string; quantity: number; price: number; fee: number; total_amount: number | null }[];
+  positions: Record<string, number>;
+  cash: number;
+  nav: number;
+}
+
+export interface CycleAuditDetail extends CycleAuditSummary {
+  record: CycleRecordAudit | null;
+}
+
+export interface CycleAuditList {
+  sim_run_id: number;
+  audit_available: boolean;
+  items: CycleAuditSummary[];
+  limit: number;
+  offset: number;
 }
 
 export interface SimRunSummary {
@@ -157,6 +240,7 @@ export interface SimRunSummary {
   initial_capital: number;
   benchmark: string | null;
   provider: string | null;
+  protocol: string | null;
   model: string | null;
   llm_connection_id: number | null;
   llm_connection_name: string | null;
@@ -236,6 +320,25 @@ export const simulationApi = {
 
   async getSimResult(simId: number): Promise<SimResult> {
     const res = await fetch(`${API_BASE_URL}/dashboard/sim/result/${simId}`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async listCycleAudits(
+    simId: number,
+    filters: { date?: string; ticker?: string } = {},
+  ): Promise<CycleAuditList> {
+    const params = new URLSearchParams();
+    if (filters.date) params.set('date', filters.date);
+    if (filters.ticker) params.set('ticker', filters.ticker);
+    const query = params.toString();
+    const res = await fetch(`${API_BASE_URL}/dashboard/sim/${simId}/cycles${query ? `?${query}` : ''}`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async getCycleAudit(simId: number, cycleId: number): Promise<CycleAuditDetail> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/sim/${simId}/cycles/${cycleId}`);
     await requireOk(res);
     return res.json();
   },

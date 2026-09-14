@@ -7,7 +7,7 @@ This is deliberately three things at once (a locked design decision):
 3. the debug trail: failed parses keep the raw response on disk.
 
 Files live under .v2_cache/llm/ (gitignored), keyed by a hash of
-(agent, provider:model identity, prompt).
+(agent, vendor:protocol:model identity, prompt).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ DEFAULT_CACHE_DIR = Path(".v2_cache/llm")
 
 
 def prompt_key(agent: str, model_identity: str, system: str, user: str) -> str:
-    """Cache key for one (agent, provider:model, prompt) combination."""
+    """Cache key for one (agent, vendor:protocol:model, prompt) combination."""
     payload = f"{agent}|{model_identity}|{system}|{user}"
     return hashlib.sha256(payload.encode()).hexdigest()[:24]
 

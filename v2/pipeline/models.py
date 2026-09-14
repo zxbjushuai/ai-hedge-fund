@@ -40,9 +40,12 @@ class CycleRecord(BaseModel):
 
     fund: str
     as_of: str
+    execution_date: str | None = None
     spec: FundSpec                      # self-contained audit copy
     universe: list[str]                 # effective run-time universe for this cycle
-    marks: dict[str, float]             # ticker -> close used for sizing and NAV
+    marks: dict[str, float]             # ticker -> T close used for signal sizing
+    execution_prices: dict[str, float]  # ticker -> exact price eligible for execution
+    valuation_prices: dict[str, float]  # ticker -> close used for ending NAV
     skipped: list[TickerSkip]
     strategies: list[StrategyRecord]    # every sleeve, incl. each thesis
     target_weights: dict[str, float]    # the NETTED book, pre-risk
