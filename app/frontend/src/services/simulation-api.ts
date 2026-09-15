@@ -73,13 +73,23 @@ export interface LlmConnectionOption {
 
 export interface SimPreflight {
   estimated_llm_calls: number;
-  estimate_kind: 'cold_cache_upper_bound';
+  estimate_kind: 'cold_cache_upper_bound' | 'event_schedule_upper_bound';
+  estimated_refresh_events: number;
+  persona_count: number;
+  event_reason_counts: Record<string, number>;
+  persona_refresh_policy: PersonaRefreshPolicy;
   provider: string;
   model: string;
   benchmark: string;
   trading_days: number;
   enabled_models: string[];
   warnings: string[];
+}
+
+export interface PersonaRefreshPolicy {
+  valuation_change_pct: number;
+  max_age_days: number;
+  retry_backoff_trading_days: number[];
 }
 
 export interface SimStatus {
@@ -151,6 +161,7 @@ export interface SimResult {
   warnings?: string[];
   models?: string[];
   audit_available: boolean;
+  persona_refresh_policy: PersonaRefreshPolicy | null;
 }
 
 export interface CycleTickerAudit {
@@ -159,6 +170,7 @@ export interface CycleTickerAudit {
   neutral_count: number;
   abstained_count: number;
   failed_count: number;
+  refresh_failed_count: number;
   target_weight: number | null;
   final_weight: number | null;
   order_count: number;
@@ -207,6 +219,7 @@ export interface CycleRecordAudit {
     convictions: Record<string, number>;
     weights: Record<string, number>;
   }[];
+  persona_events?: PersonaEventAudit[];
   target_weights: Record<string, number>;
   clamps: { limit: string; ticker: string | null; before: number; after: number }[];
   final_weights: Record<string, number>;
@@ -217,6 +230,23 @@ export interface CycleRecordAudit {
   positions: Record<string, number>;
   cash: number;
   nav: number;
+}
+
+export interface PersonaEventAudit {
+  ticker: string;
+  persona: string;
+  model_identity: string;
+  prompt_identity: string;
+  provenance: 'refreshed' | 'reused' | 'expired' | 'unavailable';
+  trigger_reasons: string[];
+  source_signal_date: string | null;
+  age_days: number | null;
+  attempt_status: 'not_attempted' | 'produced' | 'failed' | 'abstained';
+  failure: { category: string; message: string; retryable: boolean } | null;
+  prompt_key: string | null;
+  snapshot_hash: string | null;
+  failure_count: number;
+  next_retry_cycle: number | null;
 }
 
 export interface CycleAuditDetail extends CycleAuditSummary {
@@ -254,6 +284,7 @@ export interface SimRunSummary {
   error_message?: string | null;
   warnings?: string[];
   models?: string[];
+  persona_refresh_policy: PersonaRefreshPolicy | null;
 }
 
 export const simulationApi = {

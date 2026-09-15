@@ -59,6 +59,26 @@ def test_defaults_applied():
     assert spec.strategies[0].blend.gross_target == 1.0
     assert spec.strategies[0].weight == 1.0
     assert spec.capital == 100_000.0
+    assert spec.persona_refresh.valuation_change_pct == 20.0
+    assert spec.persona_refresh.max_age_days == 90
+    assert spec.persona_refresh.retry_backoff_trading_days == [1, 2, 4, 5]
+
+
+def test_persona_refresh_policy_is_configurable_and_validated():
+    spec = FundSpec(**{
+        **MINIMAL,
+        "persona_refresh": {
+            "valuation_change_pct": 10,
+            "max_age_days": 30,
+            "retry_backoff_trading_days": [1, 3],
+        },
+    })
+    assert spec.persona_refresh.max_age_days == 30
+    with pytest.raises(ValidationError, match="positive"):
+        FundSpec(**{
+            **MINIMAL,
+            "persona_refresh": {"retry_backoff_trading_days": [0]},
+        })
 
 
 def test_universe_is_an_optional_compatibility_default():

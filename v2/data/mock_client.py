@@ -76,9 +76,9 @@ class MockDataClient:
                 )
                 for row in rows
             ]
-        except Exception as e:
-            logger.warning("MockDataClient.get_prices(%s) failed: %s", ticker, e)
-            return []
+        except Exception:
+            logger.error("MockDataClient.get_prices(%s) failed", ticker)
+            raise
         finally:
             session.close()
 
@@ -122,9 +122,9 @@ class MockDataClient:
                     break
             self._add_filing_date_valuation(session, ticker, end_date, results)
             return results
-        except Exception as e:
-            logger.warning("MockDataClient.get_financial_metrics(%s) failed: %s", ticker, e)
-            return []
+        except Exception:
+            logger.error("MockDataClient.get_financial_metrics(%s) failed", ticker)
+            raise
         finally:
             session.close()
 
@@ -185,7 +185,8 @@ class MockDataClient:
                 industry=None,
             )
         except Exception:
-            return None
+            logger.error("MockDataClient.get_company_facts(%s) failed", ticker)
+            raise
         finally:
             session.close()
 

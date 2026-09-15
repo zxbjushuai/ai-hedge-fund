@@ -53,6 +53,7 @@ def _migrate(engine) -> None:
             "llm_connection_id": "INTEGER",
             "llm_connection_name": "VARCHAR(100)",
             "llm_base_url": "VARCHAR(500)",
+            "persona_refresh_policy": "TEXT",
         },
         "sim_nav_snapshot": {
             "benchmark_nav": "FLOAT",
@@ -62,6 +63,9 @@ def _migrate(engine) -> None:
         },
         "earnings_cache": {
             "source": "VARCHAR(32) NOT NULL DEFAULT 'yahoo'",
+        },
+        "sim_cycle_ticker_index": {
+            "refresh_failed_count": "INTEGER NOT NULL DEFAULT 0",
         },
     }
     with engine.begin() as conn:

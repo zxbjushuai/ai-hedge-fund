@@ -37,6 +37,25 @@ from v2.signals import ALPHA_MODEL_REGISTRY, LLMAgent
 from v2.signals.base import AlphaModel
 
 
+class PersonaRefreshPolicy(BaseModel):
+    """Deterministic refresh policy for run-scoped persona opinions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valuation_change_pct: float = Field(default=20.0, gt=0)
+    max_age_days: int = Field(default=90, ge=1)
+    retry_backoff_trading_days: list[int] = Field(
+        default_factory=lambda: [1, 2, 4, 5], min_length=1,
+    )
+
+    @field_validator("retry_backoff_trading_days")
+    @classmethod
+    def _positive_backoff(cls, delays: list[int]) -> list[int]:
+        if any(delay < 1 for delay in delays):
+            raise ValueError("retry backoff delays must be positive")
+        return delays
+
+
 class ModelSpec(BaseModel):
     """One signal model in a strategy — an LLM agent or a quant model."""
 
@@ -112,6 +131,7 @@ class FundSpec(BaseModel):
     strategies: list[StrategySpec] = Field(min_length=1)
     risk: RiskLimits
     capital: float = Field(default=100_000.0, gt=0)
+    persona_refresh: PersonaRefreshPolicy = Field(default_factory=PersonaRefreshPolicy)
 
     @field_validator("universe")
     @classmethod

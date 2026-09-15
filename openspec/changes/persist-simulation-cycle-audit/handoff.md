@@ -100,9 +100,8 @@ persistence, query APIs, and a minimal Decision Audit Web view.
 
 - Branch: `zxb_dev`.
 - Workstream 2 commit: `5becce1`.
-- Workstream 3 is implemented but not committed.
-- The Workstream 2 handoff contains a separate live-smoke-test update preserved
-  in the same working tree.
+- Workstream 3 and the final provider-platform follow-ups were committed as
+  `dd467f1`.
 
 ## Stable Contract for Workstream 4
 

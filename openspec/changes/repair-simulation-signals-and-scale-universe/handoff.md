@@ -3,12 +3,34 @@
 ## Status
 
 - Parent change: `repair-simulation-signals-and-scale-universe`
-- Current branch at handoff creation: `zxb_dev`
+- Current branch: `zxb_dev`
 - Parent Phase 1, Signal Correctness: complete
-- Parent Phase 2, Event-Driven LLM: not started
+- Workstream 1, Universe and Benchmark: complete in `da62597`
+- Workstreams 2-3, LLM Platform and Cycle Audit: complete in `dd467f1`
+- Parent Phase 2 / Workstream 4, Event-Driven LLM: committed and reviewed, with follow-up defects documented
 - Parent Phase 3, Security Catalog and Batch Cache UX: not started
-- Next recommended change: `decouple-universe-and-add-benchmark`
-- This file was created on 2026-08-27 as a context handoff; it does not itself implement a runtime feature.
+- Next recommended change: `add-security-catalog-and-batch-cache`
+
+## Review Update: 2026-09-15
+
+- sim 8 completed with 24 successful persona refreshes and 384 reuses; event
+  preflight recomputation matched. No refresh failures were observed, and max-age
+  was not exercised (maximum reused age: 58 days).
+- Requested end date September 14 was silently truncated to cached SPY end date
+  September 8. Track requested/actual coverage in Workstream 5.
+- Preserve the upstream seven-day signal-mark lookback and exact T+1 prices.
+- Code TODOs record estimated filing timestamps, startup eligibility design, and
+  a bootstrap failure that may change identity to universe_entry on cycle 2 and
+  bypass retry policy. This last item remains an unfixed correctness defect.
+- Before expanding scope, address that retry regression; the next major feature
+  remains Workstream 5. Full details are in
+  `../add-event-driven-persona-signals/handoff.md`.
+- Workstream 4 is committed by the changeset containing this handoff; no push
+  was performed as part of the implementation handoff.
+
+> Update 2026-09-14: the original repository-baseline and gap analysis below
+> is retained as historical context. The active child handoffs are authoritative
+> for implemented Workstreams 1-4.
 
 ## Repository Baseline
 
@@ -108,7 +130,7 @@
 - Treat the benchmark as a calendar/performance input, not an implicit tradeable security.
 - Store the effective universe, provider, model, and decision trail needed to reproduce a run.
 
-## Next Recommended Session
+## Historical Next Recommended Session (superseded by the status above)
 
 Create and implement the OpenSpec change:
 

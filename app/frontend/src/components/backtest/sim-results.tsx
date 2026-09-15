@@ -64,6 +64,12 @@ export function SimResults({ result }: Props) {
               LLM: {result.model ? `${result.llm_connection_name || result.provider || 'N/A'}/${result.model}` : 'N/A'}
               {result.protocol ? ` (${result.protocol})` : ''}
             </p>
+            {result.persona_refresh_policy && (
+              <p className="text-muted-foreground">
+                Persona refresh: {result.persona_refresh_policy.valuation_change_pct}% valuation move
+                {' / '}{result.persona_refresh_policy.max_age_days} days maximum age
+              </p>
+            )}
             {result.warnings?.map((warning, index) => (
               <p key={index} className="text-amber-600">Data warning: {warning}</p>
             ))}

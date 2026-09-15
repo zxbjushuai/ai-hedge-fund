@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import date as _date
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from v2.brokers.models import Fill
 from v2.brokers.protocol import Broker
@@ -40,6 +41,10 @@ from v2.pipeline.execution import build_orders
 from v2.pipeline.models import CycleRecord, StrategyRecord, TickerSkip
 from v2.portfolio.construction import blend_signals
 from v2.risk.limits import apply_limits
+from v2.signals import LLMAgent
+
+if TYPE_CHECKING:
+    from v2.simulation.persona_state import PersonaSignalEngine
 
 # How far back to look for the most recent close: covers weekends, holiday
 # clusters, and short trading halts without reaching into stale history.
@@ -55,6 +60,7 @@ def run_cycle(
     valuation_prices: dict[str, float] | None = None,
     execution_date: str | None = None,
     universe: list[str] | None = None,
+    persona_engine: PersonaSignalEngine | None = None,
 ) -> CycleRecord:
     """Run one tick of *fund* as of *as_of* (YYYY-MM-DD) and return the record."""
     spec = fund.spec
@@ -89,7 +95,12 @@ def run_cycle(
         signals: list[Signal] = []
         for ticker in tradeable:
             for model in staff:
-                signals.append(model.predict(ticker, as_of, data_client))
+                if persona_engine is not None and isinstance(model, LLMAgent):
+                    signals.append(persona_engine.predict(
+                        model, ticker, as_of, marks[ticker], data_client,
+                    ))
+                else:
+                    signals.append(model.predict(ticker, as_of, data_client))
         blend = blend_signals(
             signals, strategy.model_weights, strategy.blend.gross_target,
             market_neutral=strategy.blend.market_neutral,
@@ -150,6 +161,7 @@ def run_cycle(
         valuation_prices=nav_marks,
         skipped=skipped,
         strategies=strategy_records,
+        persona_events=(persona_engine.finish_cycle() if persona_engine else []),
         target_weights=netted,
         clamps=risk.clamps,
         final_weights=risk.weights,

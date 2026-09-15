@@ -139,6 +139,24 @@ export function DecisionAudit({ simId, auditAvailable }: Props) {
                             <StatusBadge status={signal.status} />
                             <span>conviction {signal.value.toFixed(3)}</span>
                           </div>
+                          {(() => {
+                            const event = record.persona_events?.find(item =>
+                              item.ticker === signal.ticker && item.persona === signal.model_name
+                            );
+                            if (!event) return null;
+                            return (
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                <span className="font-medium">{event.provenance}</span>
+                                {event.trigger_reasons.length > 0 && (
+                                  <span> · triggers: {event.trigger_reasons.join(', ')}</span>
+                                )}
+                                {event.source_signal_date && <span> · source: {event.source_signal_date}</span>}
+                                {event.age_days != null && <span> · age: {event.age_days}d</span>}
+                                <span> · attempt: {event.attempt_status}</span>
+                                {event.next_retry_cycle != null && <span> · retry cycle: {event.next_retry_cycle}</span>}
+                              </div>
+                            );
+                          })()}
                           {signal.failure && (
                             <p className="mt-1 text-red-500">
                               {signal.failure.category}: {signal.failure.message}

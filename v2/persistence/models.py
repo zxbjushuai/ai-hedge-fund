@@ -175,6 +175,7 @@ class SimRun(Base):
     completed_at: Mapped[str | None] = mapped_column(String(26), nullable=True)
     warnings: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     models: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    persona_refresh_policy: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[str] = mapped_column(
         String(26), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -275,6 +276,7 @@ class SimCycleTickerIndex(Base):
     neutral_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     abstained_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    refresh_failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     target_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
     order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -282,4 +284,41 @@ class SimCycleTickerIndex(Base):
 
     __table_args__ = (
         UniqueConstraint("sim_cycle_record_id", "ticker", name="uq_sim_cycle_ticker"),
+    )
+
+
+class SimPersonaState(Base):
+    """Latest effective persona opinion, isolated to one simulation timeline."""
+
+    __tablename__ = "sim_persona_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sim_run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sim_run.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    ticker: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    persona: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_identity: Mapped[str] = mapped_column(String(300), nullable=False)
+    prompt_identity: Mapped[str] = mapped_column(String(64), nullable=False)
+    signal_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_signal_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    valuation_anchor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latest_filing_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    latest_earnings_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    pending_event_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_cycle: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_failure_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_failure_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[str] = mapped_column(
+        String(26), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "sim_run_id", "ticker", "persona", "model_identity", "prompt_identity",
+            name="uq_sim_persona_state_identity",
+        ),
     )

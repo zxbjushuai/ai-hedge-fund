@@ -157,9 +157,9 @@ remain isolated.
 ## Git State
 
 - Branch: `zxb_dev`.
-- Workstream 2 was committed as `5becce1` and pushed to `fork/zxb_dev`.
-- The OpenCode Go compatibility fix and Workstream 3 are implemented in the
-  current working tree but are not committed.
+- Initial Workstream 2 implementation was committed as `5becce1`.
+- The final provider polymorphism, OpenCode Go compatibility, and Workstream 3
+  baseline were committed together as `dd467f1`.
 
 ## Stable Contract for Workstream 3
 

@@ -11,13 +11,13 @@
 
 ## 2. Phase 2 — Event-Driven LLM
 
-- [ ] 2.1 Add persisted effective persona signal state keyed by ticker and model
-- [ ] 2.2 Bootstrap all eligible universe tickers at simulation start
-- [ ] 2.3 Detect new-filing, earnings-surprise, valuation-bucket, universe-entry, and maximum-age events
-- [ ] 2.4 Refresh only event tickers and reuse still-valid state for non-event tickers
-- [ ] 2.5 Preserve valid prior state on refresh failure and abstain only when no valid state exists
-- [ ] 2.6 Materialize a complete point-in-time daily signal set before existing portfolio construction
-- [ ] 2.7 Add event-driven preflight estimates, audit metadata, and chronological no-lookahead tests
+- [x] 2.1 Add persisted effective persona signal state keyed by ticker and model
+- [x] 2.2 Bootstrap all eligible universe tickers at simulation start
+- [x] 2.3 Detect new-filing, earnings-surprise, valuation-bucket, universe-entry, and maximum-age events
+- [x] 2.4 Refresh only event tickers and reuse still-valid state for non-event tickers
+- [x] 2.5 Preserve valid prior state on refresh failure and abstain only when no valid state exists
+- [x] 2.6 Materialize a complete point-in-time daily signal set before existing portfolio construction
+- [x] 2.7 Add event-driven preflight estimates, audit metadata, and chronological no-lookahead tests
 
 ## 3. Phase 3 — Security Catalog and Batch Cache UX
 

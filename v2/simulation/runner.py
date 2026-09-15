@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from v2.brokers import SimBroker
 from v2.data.mock_client import MockDataClient
 from v2.failures import classify_cycle_failure
-from v2.fund import Fund, load_spec, normalize_universe
+from v2.fund import Fund, PersonaRefreshPolicy, load_spec, normalize_universe
 from v2.llm import LLMClient
 from v2.persistence.database import get_session, init_db
 from v2.persistence.models import (
@@ -22,6 +23,7 @@ from v2.persistence.models import (
 )
 from v2.pipeline import run_cycle
 from v2.simulation.audit import persist_completed_cycle, persist_failed_cycle
+from v2.simulation.persona_state import PersonaSignalEngine
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,115 @@ def estimate_filing_prompt_calls(
             ).scalars().all()
             snapshot_count += 1 + len(changes)
     return snapshot_count * len(persona_names)
+
+
+def estimate_persona_event_schedule(
+    db_path: str,
+    tickers: list[str],
+    trading_days: list[str],
+    persona_names: set[str],
+    policy: PersonaRefreshPolicy,
+) -> dict:
+    """Replay a cold-cache, successful-refresh event timeline from SQLite."""
+    reason_counts = {
+        reason: 0 for reason in (
+            "bootstrap", "new_filing", "actionable_earnings",
+            "valuation_change", "max_age", "universe_entry",
+        )
+    }
+    signal_days = trading_days[:-1]
+    if not signal_days or not persona_names:
+        return {
+            "estimated_llm_calls": 0,
+            "estimated_refresh_events": 0,
+            "persona_count": len(persona_names),
+            "event_reason_counts": reason_counts,
+        }
+
+    refresh_events = 0
+    with get_session(db_path) as session:
+        for ticker in sorted(set(t.upper() for t in tickers)):
+            price_rows = session.execute(
+                select(PriceCache.date, PriceCache.close).where(
+                    PriceCache.ticker == ticker,
+                    PriceCache.date >= (
+                        date.fromisoformat(signal_days[0]) - timedelta(days=7)
+                    ).isoformat(),
+                    PriceCache.date <= signal_days[-1],
+                ).order_by(PriceCache.date)
+            ).all()
+            metric_rows = session.execute(
+                select(MetricsCache.id, MetricsCache.filing_date).where(
+                    MetricsCache.ticker == ticker,
+                    MetricsCache.filing_date <= signal_days[-1],
+                ).order_by(MetricsCache.filing_date, MetricsCache.id)
+            ).all()
+            earnings_rows = session.execute(
+                select(EarningsCache.announcement_date).where(
+                    EarningsCache.ticker == ticker,
+                    EarningsCache.announcement_date <= signal_days[-1],
+                    EarningsCache.surprise_pct.is_not(None),
+                    EarningsCache.surprise_pct != 0,
+                ).order_by(EarningsCache.announcement_date)
+            ).scalars().all()
+
+            source_date: str | None = None
+            anchor: float | None = None
+            filing_marker: tuple | None = None
+            earnings_marker: str | None = None
+            for day_index, signal_day in enumerate(signal_days):
+                cutoff = date.fromisoformat(signal_day) - timedelta(days=7)
+                prices = [
+                    (row_date, float(close)) for row_date, close in price_rows
+                    if cutoff.isoformat() <= row_date <= signal_day and close > 0
+                ]
+                visible_metrics = [row for row in metric_rows if row.filing_date <= signal_day]
+                if not prices or len(visible_metrics) < 4:
+                    continue
+                current_close = prices[-1][1]
+                current_filing = tuple(row.id for row in visible_metrics[-20:])
+                visible_earnings = [value for value in earnings_rows if value <= signal_day]
+                current_earnings = visible_earnings[-1] if visible_earnings else None
+                reasons: list[str] = []
+                if source_date is None:
+                    reasons.append("bootstrap" if day_index == 0 else "universe_entry")
+                    if current_earnings:
+                        reasons.append("actionable_earnings")
+                else:
+                    # Keep this estimate aligned with PersonaSignalEngine.  The cached
+                    # filing marker currently uses estimated_45d dates.
+                    # TODO(event-driven-persona): replay authoritative filing dates
+                    # once the cache stores source-aware filing timestamps.
+                    if filing_marker != current_filing:
+                        reasons.append("new_filing")
+                    if current_earnings and current_earnings != earnings_marker:
+                        reasons.append("actionable_earnings")
+                    if (
+                        anchor
+                        and abs((current_close / anchor - 1) * 100) + 1e-9
+                        >= policy.valuation_change_pct
+                    ):
+                        reasons.append("valuation_change")
+                    if (
+                        date.fromisoformat(signal_day) - date.fromisoformat(source_date)
+                    ).days >= policy.max_age_days:
+                        reasons.append("max_age")
+                if not reasons:
+                    continue
+                refresh_events += 1
+                for reason in reasons:
+                    reason_counts[reason] += 1
+                source_date = signal_day
+                anchor = current_close
+                filing_marker = current_filing
+                earnings_marker = current_earnings
+
+    return {
+        "estimated_llm_calls": refresh_events * len(persona_names),
+        "estimated_refresh_events": refresh_events,
+        "persona_count": len(persona_names),
+        "event_reason_counts": reason_counts,
+    }
 
 
 def validate_cached_data(
@@ -208,6 +319,10 @@ class SimRunner:
     ) -> int:
         """Create a SimRun row and return its id. Call start() to run."""
         init_db(db_path)
+        configured_policy = (
+            load_spec(fund_spec_path).persona_refresh
+            if Path(fund_spec_path).exists() else PersonaRefreshPolicy()
+        )
         tickers = normalize_universe(tickers)
         benchmark = benchmark.strip().upper()
         if not benchmark:
@@ -251,6 +366,7 @@ class SimRunner:
                 initial_capital=initial_capital,
                 status="pending",
                 total_days=len(days),
+                persona_refresh_policy=configured_policy.model_dump_json(),
             )
             session.add(run)
             session.commit()
@@ -311,6 +427,7 @@ class SimRunner:
                 run = session.execute(select(SimRun).where(SimRun.id == self._id)).scalar_one()
                 run.warnings = json.dumps(warnings)
                 run.models = json.dumps(enabled_models)
+                run.persona_refresh_policy = spec.persona_refresh.model_dump_json()
                 session.commit()
             benchmark_closes = _benchmark_closes(
                 self._db_path, self._benchmark, self._start, self._end,
@@ -319,6 +436,7 @@ class SimRunner:
             data_client = MockDataClient(self._db_path)
             broker = SimBroker(cash=self._capital, fee_rate=self._fee_rate)
             fund = Fund(spec, llm=self._llm)  # one immutable client for this run
+            persona_engine = PersonaSignalEngine(spec.persona_refresh)
             benchmark_base = benchmark_closes[days[0]]
             self._save_nav_snapshot(
                 get_session(self._db_path), days[0], self._capital,
@@ -329,10 +447,12 @@ class SimRunner:
                 signal_day = days[i - 1]
                 opens, closes = self._prices_for_day(day)
                 try:
+                    persona_engine.begin_cycle(i)
                     record = run_cycle(
                         fund, signal_day, broker, data_client,
                         execution_prices=opens, valuation_prices=closes, execution_date=day,
                         universe=self._tickers,
+                        persona_engine=persona_engine,
                     )
                 except Exception as exc:
                     try:
@@ -468,6 +588,10 @@ def get_sim_status(sim_id: int, db_path: str) -> dict | None:
             "completed_at": run.completed_at,
             "warnings": json.loads(run.warnings or "[]"),
             "models": json.loads(run.models or "[]"),
+            "persona_refresh_policy": (
+                json.loads(run.persona_refresh_policy)
+                if run.persona_refresh_policy else None
+            ),
         }
     finally:
         session.close()
@@ -609,6 +733,10 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "warnings": json.loads(run.warnings or "[]"),
             "models": json.loads(run.models or "[]"),
             "audit_available": audit_available,
+            "persona_refresh_policy": (
+                json.loads(run.persona_refresh_policy)
+                if run.persona_refresh_policy else None
+            ),
         }
     finally:
         session.close()
@@ -645,6 +773,10 @@ def list_sim_runs(db_path: str) -> list[dict]:
                 "error_message": r.error_message,
                 "warnings": json.loads(r.warnings or "[]"),
                 "models": json.loads(r.models or "[]"),
+                "persona_refresh_policy": (
+                    json.loads(r.persona_refresh_policy)
+                    if r.persona_refresh_policy else None
+                ),
             }
             for r in rows
         ]

@@ -66,7 +66,7 @@ Phase 1 of this parent change is complete in commit `0ade3e0`:
 
 ## Ordered Workstreams
 
-### Workstream 1: Market and Simulation Time Semantics
+### Workstream 1: Market and Simulation Time Semantics (Completed)
 
 Suggested OpenSpec change: `decouple-universe-and-add-benchmark`
 
@@ -89,7 +89,7 @@ Non-goals:
 
 - Provider selection, event-driven persona refresh, the security catalog, and a detailed audit UI.
 
-### Workstream 2: LLM Provider Platform
+### Workstream 2: LLM Provider Platform (Completed)
 
 Suggested OpenSpec change: `unify-v2-llm-providers`
 
@@ -110,7 +110,7 @@ Acceptance boundary:
 
 Optional follow-up, not required for the first implementation: token streaming over SSE.
 
-### Workstream 3: Failure Semantics and Cycle Audit
+### Workstream 3: Failure Semantics and Cycle Audit (Completed)
 
 Suggested OpenSpec change: `persist-simulation-cycle-audit`
 
@@ -131,7 +131,7 @@ Acceptance boundary:
 
 Non-goal: fully normalizing every nested signal into relational tables.
 
-### Workstream 4: Event-Driven Persona Signals
+### Workstream 4: Event-Driven Persona Signals (Implemented; reviewed with follow-ups)
 
 Suggested OpenSpec change: `add-event-driven-persona-signals`
 
@@ -153,6 +153,25 @@ Acceptance boundary:
 - If only AAPL has an event on a date, only AAPL's affected personas make new calls.
 - Non-event tickers still participate in the same portfolio construction using their valid prior state.
 - Replaying the same point-in-time inputs produces the same event schedule.
+
+Review outcome (2026-09-15): sim 8 verified 24 successful refreshes and 384
+reuses across 68 cycles; recomputed preflight matched all 8 ticker/date events.
+The implementation was completed after baseline `dd467f1`; see the child handoff
+for validation evidence and the bootstrap-failure-to-universe-entry retry defect.
+
+Follow-up priorities:
+
+1. Fix initial-attempt identity so bootstrap failure cannot bypass backoff when
+   the next cycle is mislabeled universe entry; add the missing regression case.
+2. Define startup eligibility for partial-history/newly listed companies.
+3. Replace estimated quarterly +45-day filing visibility with sourced timestamps;
+   keep runtime detection and preflight estimation consistent.
+4. Expose requested versus actual cache coverage in Workstream 5. Benchmark data
+   gaps must not be presented as verified holidays or full-range completion.
+
+Retained decision: keep the upstream seven-day signal-mark lookback. It does
+not change exact T+1 open execution or close valuation. Any future removal must
+review scheduler and CLI callers as well as simulation; no such removal is planned.
 
 ### Workstream 5: Security Catalog and Batch Cache UX
 

@@ -29,3 +29,7 @@ risk:
   max_position_pct: 0.25      # master risk: no single name above 25% of equity
   max_gross_exposure: 1.0     # unlevered, across the netted book
 capital: 100000
+persona_refresh:
+  valuation_change_pct: 20.0
+  max_age_days: 90
+  retry_backoff_trading_days: [1, 2, 4, 5]

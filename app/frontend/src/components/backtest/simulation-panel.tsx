@@ -83,15 +83,22 @@ export function SimulationPanel() {
       const warningText = preflight.warnings.length
         ? `\n\nWarnings:\n- ${preflight.warnings.join('\n- ')}`
         : '';
+      const reasonSummary = Object.entries(preflight.event_reason_counts)
+        .filter(([, count]) => count > 0)
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(', ') || 'none';
       const accepted = window.confirm(
         `Simulation preflight\n\n` +
         `Estimated model API calls: ${preflight.estimated_llm_calls}\n` +
+        `Scheduled ticker events: ${preflight.estimated_refresh_events}\n` +
+        `Event reasons: ${reasonSummary}\n` +
+        `Persona refresh: ${preflight.persona_refresh_policy.valuation_change_pct}% / ${preflight.persona_refresh_policy.max_age_days} days\n` +
         `Provider: ${preflight.provider}\n` +
         `Model: ${preflight.model}\n` +
         `Benchmark: ${preflight.benchmark}\n` +
         `Trading days: ${preflight.trading_days}\n` +
         `Strategies: ${preflight.enabled_models.join(', ') || 'none'}\n\n` +
-        `This is a cold-cache upper bound; cached prompts reduce actual calls.` +
+        `This is an event-schedule upper bound; cached prompts reduce actual calls.` +
         warningText + `\n\nContinue?`
       );
       if (!accepted) {

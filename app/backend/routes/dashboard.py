@@ -338,6 +338,10 @@ def cache_fetch(data: CacheFetchRequest):
                         "price_to_sales_ratio", "enterprise_value_to_ebitda_ratio",
                         "enterprise_value_to_revenue_ratio", "peg_ratio",
                     })
+                    # TODO(event-driven-persona): yfinance quarterly statements expose
+                    # report periods here, not authoritative public filing timestamps.
+                    # Replace this +45-day estimate with source-aware SEC/filing dates
+                    # before treating it as the exact availability date of new metrics.
                     if existing:
                         existing.data = m_json
                         existing.filing_date = (date.fromisoformat(m.report_period) + timedelta(days=45)).isoformat()
@@ -865,7 +869,7 @@ def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
     from v2.simulation.runner import (
         _trading_days,
         disable_unavailable_models,
-        estimate_filing_prompt_calls,
+        estimate_persona_event_schedule,
         validate_cached_data,
     )
 
@@ -892,6 +896,16 @@ def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
     provider = "none"
     model_name = "none"
     estimate = 0
+    event_estimate = {
+        "estimated_refresh_events": 0,
+        "persona_count": len(persona_names),
+        "event_reason_counts": {
+            reason: 0 for reason in (
+                "bootstrap", "new_filing", "actionable_earnings",
+                "valuation_change", "max_age", "universe_entry",
+            )
+        },
+    }
     trading_days = _trading_days(_DB_PATH, benchmark, start_date, end_date)
     llm = resolved_llm if resolved_llm is not None else _resolve_simulation_llm(
         data, required=bool(persona_names)
@@ -900,12 +914,15 @@ def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
         provider = getattr(llm, "provider", type(llm).__name__)
         model_name = llm.model
     if persona_names:
-        estimate = estimate_filing_prompt_calls(
-            _DB_PATH, tickers, trading_days, persona_names,
+        event_estimate = estimate_persona_event_schedule(
+            _DB_PATH, tickers, trading_days, persona_names, spec.persona_refresh,
         )
+        estimate = event_estimate["estimated_llm_calls"]
     result = {
         "estimated_llm_calls": estimate,
-        "estimate_kind": "cold_cache_upper_bound",
+        "estimate_kind": "event_schedule_upper_bound",
+        **event_estimate,
+        "persona_refresh_policy": spec.persona_refresh.model_dump(),
         "provider": provider,
         "model": model_name,
         "benchmark": benchmark,

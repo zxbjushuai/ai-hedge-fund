@@ -8,7 +8,9 @@ these; `fund why AAPL` will answer from them alone.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 from v2.brokers.models import Fill, Order
 from v2.fund.spec import FundSpec
@@ -33,6 +35,30 @@ class StrategyRecord(BaseModel):
     weights: dict[str, float]           # the sleeve, before netting across strategies
 
 
+class PersonaEventRecord(BaseModel):
+    """One effective persona decision and the event attempt behind it."""
+
+    ticker: str
+    persona: str
+    model_identity: str
+    prompt_identity: str
+    provenance: Literal["refreshed", "reused", "expired", "unavailable"]
+    trigger_reasons: list[str] = Field(default_factory=list)
+    source_signal_date: str | None = None
+    age_days: int | None = None
+    attempt_status: Literal["not_attempted", "produced", "failed", "abstained"]
+    failure: dict | None = None
+    prompt_key: str | None = None
+    snapshot_hash: str | None = None
+    valuation_anchor: float | None = None
+    latest_filing_date: str | None = None
+    latest_earnings_date: str | None = None
+    event_fingerprint: str | None = None
+    failure_count: int = 0
+    next_retry_cycle: int | None = None
+    effective_signal: Signal | None = None
+
+
 class CycleRecord(BaseModel):
     """One tick of the fund, fully serialized — every stage's inputs and
     outputs. `model_dump_json()` round-trips; nothing about a decision
@@ -48,6 +74,7 @@ class CycleRecord(BaseModel):
     valuation_prices: dict[str, float]  # ticker -> close used for ending NAV
     skipped: list[TickerSkip]
     strategies: list[StrategyRecord]    # every sleeve, incl. each thesis
+    persona_events: list[PersonaEventRecord] = Field(default_factory=list)
     target_weights: dict[str, float]    # the NETTED book, pre-risk
     clamps: list[ClampEvent]
     final_weights: dict[str, float]     # post-risk

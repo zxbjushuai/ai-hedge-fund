@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from v2.persistence.models import (
     SimCycleRecord,
     SimCycleTickerIndex,
     SimNavSnapshot,
+    SimPersonaState,
     SimRun,
     SimTradeLog,
 )
@@ -71,6 +73,7 @@ def persist_completed_cycle(
                 ),
                 cycle_date=record.execution_date or record.as_of,
             ))
+        _upsert_persona_states(session, sim_run_id, record)
         session.commit()
         return row.id
     except Exception:
@@ -197,6 +200,10 @@ def _ticker_summaries(record: CycleRecord) -> list[dict]:
             "neutral_count": sum(signal.value == 0 for signal in produced),
             "abstained_count": statuses.count("abstained"),
             "failed_count": statuses.count("failed"),
+            "refresh_failed_count": sum(
+                event.ticker == ticker and event.attempt_status == "failed"
+                for event in record.persona_events
+            ),
             "target_weight": record.target_weights.get(ticker),
             "final_weight": record.final_weights.get(ticker),
             "order_count": sum(item.ticker == ticker for item in record.orders),
@@ -241,6 +248,7 @@ def _summary(session: Session, row: SimCycleRecord) -> dict:
                 "neutral_count": item.neutral_count,
                 "abstained_count": item.abstained_count,
                 "failed_count": item.failed_count,
+                "refresh_failed_count": item.refresh_failed_count,
                 "target_weight": item.target_weight,
                 "final_weight": item.final_weight,
                 "order_count": item.order_count,
@@ -249,3 +257,46 @@ def _summary(session: Session, row: SimCycleRecord) -> dict:
             for item in tickers
         ],
     }
+
+
+def _upsert_persona_states(
+    session: Session, sim_run_id: int, record: CycleRecord,
+) -> None:
+    """Apply state transitions inside the completed-cycle transaction."""
+    for event in record.persona_events:
+        row = session.execute(select(SimPersonaState).where(
+            SimPersonaState.sim_run_id == sim_run_id,
+            SimPersonaState.ticker == event.ticker,
+            SimPersonaState.persona == event.persona,
+            SimPersonaState.model_identity == event.model_identity,
+            SimPersonaState.prompt_identity == event.prompt_identity,
+        )).scalar_one_or_none()
+        if row is None:
+            row = SimPersonaState(
+                sim_run_id=sim_run_id,
+                ticker=event.ticker,
+                persona=event.persona,
+                model_identity=event.model_identity,
+                prompt_identity=event.prompt_identity,
+            )
+            session.add(row)
+        if event.provenance == "refreshed" and event.effective_signal is not None:
+            row.signal_payload = event.effective_signal.model_dump_json()
+            row.source_signal_date = event.source_signal_date
+            row.snapshot_hash = event.snapshot_hash
+            row.prompt_key = event.prompt_key
+            row.valuation_anchor = event.valuation_anchor
+            row.latest_filing_date = event.latest_filing_date
+            row.latest_earnings_date = event.latest_earnings_date
+        row.pending_event_fingerprint = (
+            event.event_fingerprint if event.failure_count > 0 else None
+        )
+        row.failure_count = event.failure_count
+        row.next_retry_cycle = event.next_retry_cycle
+        row.last_failure_category = (
+            str(event.failure.get("category")) if event.failure else None
+        )
+        row.last_failure_message = (
+            str(event.failure.get("message"))[:500] if event.failure else None
+        )
+        row.updated_at = datetime.now(timezone.utc).isoformat()

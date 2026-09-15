@@ -24,6 +24,8 @@ Failure contract:
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 
 from v2.data.protocol import DataClient
 from v2.failures import classify_llm_failure
@@ -60,10 +62,30 @@ class LLMAgent(AlphaModel):
             return self._abstain(ticker, date, f"insufficient data: {exc}")
         # Any other data-layer exception (e.g. FDClientError) propagates.
 
-        system = self.get_system_prompt()
-        user = self.build_user_prompt(snapshot)
+        return self.predict_snapshot(ticker, date, snapshot)
+
+    @property
+    def model_identity(self) -> str:
         provider = getattr(self._llm, "provider", "unknown")
-        identity = getattr(self._llm, "identity", f"{provider}:{self._llm.model}")
+        return getattr(self._llm, "identity", f"{provider}:{self._llm.model}")
+
+    @property
+    def prompt_identity(self) -> str:
+        payload = f"{self.name}|{type(self).__qualname__}|{self.get_system_prompt()}"
+        return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+    def predict_snapshot(
+        self,
+        ticker: str,
+        date: str,
+        snapshot: FundamentalsSnapshot,
+        event_context: dict | None = None,
+    ) -> Signal:
+        """Analyze a prepared snapshot, optionally with point-in-time event context."""
+        system = self.get_system_prompt()
+        user = self.build_user_prompt(snapshot, event_context)
+        provider = getattr(self._llm, "provider", "unknown")
+        identity = self.model_identity
         key = prompt_key(self.name, identity, system, user)
 
         cached = self._cache.get(key)
@@ -121,9 +143,15 @@ class LLMAgent(AlphaModel):
         Protocol — not before."""
         return build_snapshot(ticker, date, data_client)
 
-    def build_user_prompt(self, snapshot: FundamentalsSnapshot) -> str:
+    def build_user_prompt(
+        self, snapshot: FundamentalsSnapshot, event_context: dict | None = None,
+    ) -> str:
         """Default user prompt: the rendered snapshot. Override to enrich."""
-        return snapshot.render()
+        prompt = snapshot.render()
+        if not event_context:
+            return prompt
+        context = json.dumps(event_context, sort_keys=True, separators=(",", ":"))
+        return f"{prompt}\n\nPoint-in-time event context:\n{context}"
 
     # ------------------------------------------------------------------
     # Private helpers

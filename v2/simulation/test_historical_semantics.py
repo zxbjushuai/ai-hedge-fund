@@ -118,6 +118,7 @@ def test_additive_migration_adds_nullable_benchmark_and_llm_columns(tmp_path: Pa
     assert "llm_connection_id" in run_columns
     assert "llm_connection_name" in run_columns
     assert "llm_base_url" in run_columns
+    assert "persona_refresh_policy" in run_columns
     assert "benchmark_nav" in nav_columns
     with sqlite3.connect(db) as migrated:
         tables = {
@@ -125,7 +126,7 @@ def test_additive_migration_adds_nullable_benchmark_and_llm_columns(tmp_path: Pa
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-    assert {"sim_cycle_record", "sim_cycle_ticker_index"} <= tables
+    assert {"sim_cycle_record", "sim_cycle_ticker_index", "sim_persona_state"} <= tables
 
 
 def test_mock_client_hides_metrics_until_estimated_filing_date(tmp_path: Path):
@@ -409,7 +410,7 @@ capital: 1000
         assert session.query(SimTradeLog).filter_by(sim_run_id=sim_id).count() == trade_count
 
 
-def test_sim_api_requires_confirmation_for_cold_cache_upper_bound(tmp_path: Path, monkeypatch):
+def test_sim_api_requires_confirmation_for_event_schedule_upper_bound(tmp_path: Path, monkeypatch):
     import app.backend.routes.dashboard as dashboard
     import v2.llm
 
@@ -454,6 +455,11 @@ def test_sim_api_requires_confirmation_for_cold_cache_upper_bound(tmp_path: Path
         dashboard.sim_run(request)
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["estimated_llm_calls"] == 3
+    assert exc_info.value.detail["estimate_kind"] == "event_schedule_upper_bound"
+    assert exc_info.value.detail["estimated_refresh_events"] == 1
+    assert exc_info.value.detail["persona_count"] == 3
+    assert exc_info.value.detail["event_reason_counts"]["bootstrap"] == 1
+    assert exc_info.value.detail["event_reason_counts"]["actionable_earnings"] == 1
 
 
 def test_preflight_always_exposes_call_estimate(tmp_path: Path, monkeypatch):
@@ -483,6 +489,8 @@ def test_preflight_always_exposes_call_estimate(tmp_path: Path, monkeypatch):
     )
     result = dashboard.sim_preflight(request)
     assert result["estimated_llm_calls"] == 3
+    assert result["estimate_kind"] == "event_schedule_upper_bound"
+    assert result["persona_refresh_policy"]["valuation_change_pct"] == 20.0
     assert result["trading_days"] == 2
     assert result["benchmark"] == "SPY"
     assert result["provider"] == "openai"
