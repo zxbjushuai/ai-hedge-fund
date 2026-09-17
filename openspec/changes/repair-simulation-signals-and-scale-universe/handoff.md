@@ -9,8 +9,9 @@ Final offline suite: 296 passed, 39 live deselected. Clean temporary frontend
 installation builds and passes zero-warning ESLint. Chrome DevTools verified
 historical simulation/audit, providers, cache search and AAPL detail using backup
 copies. Parent/change history documents remain preserved.
-Stage 4 still requires an explicitly chosen live connection/small simulation and
-authorization to integrate the migration branch into development. No push done.
+Stage 4 simulation acceptance passed: user confirmed sim9; read-only verification
+found completed status, 71 completed cycles, 72 NAV snapshots and 112 trades.
+Development-branch integration still requires authorization. No push done.
 See `integrate-upstream-and-isolate-research-app/handoff.md` for details.
 
 ## Migration update — 2026-09-17

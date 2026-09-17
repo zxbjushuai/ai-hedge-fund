@@ -29,8 +29,12 @@
 
 ### Remaining stage 4 gates
 
-Operation/merge documentation is updated, but no paid live simulation has been
-started. User must choose the connection/model and small run for that acceptance.
+User confirmed sim9 ran successfully on 2026-09-17. Read-only verification of
+fund.db confirms status completed, requested interval 2026-06-03 through
+2026-09-16, 71 completed cycle records (no failed cycles), 72 NAV snapshots and
+112 trade records. This closes the user-run simulation acceptance gate; it is
+not a claim that every model response or investment decision was independently
+audited. No additional live requests were initiated for this verification.
 Development-branch integration and remote push are not authorized and not done.
 All prior status notes below are historical, superseded by this section.
 

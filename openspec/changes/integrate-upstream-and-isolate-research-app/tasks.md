@@ -16,4 +16,5 @@
 - [x] Merge fc1bf25 and migrate the core package to hedge_fund.
 - [x] Verify both upstream and custom semantics (offline suite, CLI receipts, TUI home, Web backup-copy browser smoke).
 - [x] Remove approved obsolete code and dependencies; preserve DB tables and OpenSpec history.
-- [ ] Complete stage 4 acceptance and handoff; integrate only when authorized.
+- [x] Record user-run sim9 acceptance and verify persisted completion read-only (71 completed cycles, 72 NAV snapshots, 112 trades).
+- [ ] Integrate into development only when explicitly authorized; record final integration checkpoint.

@@ -8,6 +8,7 @@ The chat history is not a source of truth. If a later decision changes this road
 
 ## Project Baseline
 
+- Stage 4 user-run simulation acceptance passed on 2026-09-17: sim9 completed with 71 completed cycles, 72 NAV snapshots and 112 trades (read-only DB verification). Development-branch integration remains pending explicit authorization.
 - Migration stages 1–3 use one `hedge_fund/` core and the React/Vite plus FastAPI Web UI under `research_app/`. The former `v2/` and `app/` source paths are retired; the old SQLite file locations remain unchanged.
 - Integration branch: `migration/upstream-web-isolation`; stage 1 checkpoint `5b714d2`, real upstream merge `5d1c480` (parents include `fc1bf25`). Development branch and remote have not been changed.
 - The fork was based on upstream v2.0.0 (`284a650`). The approved migration now pins fork `5fca1b4` and upstream `fc1bf25`.
