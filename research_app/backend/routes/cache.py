@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import date
 from fastapi import APIRouter, HTTPException, Query
-from v2.persistence.database import get_session, init_db
+from hedge_fund.persistence.database import get_session, init_db
 from research_app.backend.config import settings
 from .schemas import CacheFetchRequest, SecurityFilterRequest, CacheSelectionRequest, CacheJobCreateRequest
 from .securities import _security_query, _security_dict
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _DB_PATH = str(settings.fund_db)
 
 def _resolve_cache_selection(selection: CacheSelectionRequest) -> list[str]:
-    from v2.persistence.models import SavedUniverseMember, Security
+    from hedge_fund.persistence.models import SavedUniverseMember, Security
     init_db(_DB_PATH)
     with get_session(_DB_PATH) as session:
         if selection.tickers is not None:
@@ -47,13 +47,13 @@ def _resolve_cache_selection(selection: CacheSelectionRequest) -> list[str]:
 
 @router.get("/cache/jobs")
 def cache_jobs_list():
-    from v2.data.cache_jobs import get_cache_job_manager
+    from hedge_fund.data.cache_jobs import get_cache_job_manager
     return {"jobs": get_cache_job_manager(_DB_PATH).list()}
 
 
 @router.post("/cache/jobs", status_code=202)
 def cache_job_create(data: CacheJobCreateRequest):
-    from v2.data.cache_jobs import get_cache_job_manager
+    from hedge_fund.data.cache_jobs import get_cache_job_manager
     tickers = _resolve_cache_selection(data.selection)
     return get_cache_job_manager(_DB_PATH).create(
         tickers, data.benchmark, data.start_date.isoformat(), data.end_date.isoformat(), data.data_types, data.force,
@@ -62,7 +62,7 @@ def cache_job_create(data: CacheJobCreateRequest):
 
 @router.get("/cache/jobs/{job_id}")
 def cache_job_detail(job_id: str):
-    from v2.data.cache_jobs import get_cache_job_manager
+    from hedge_fund.data.cache_jobs import get_cache_job_manager
     result = get_cache_job_manager(_DB_PATH).get(job_id)
     if result is None:
         raise HTTPException(status_code=404, detail="cache job not found")
@@ -71,7 +71,7 @@ def cache_job_detail(job_id: str):
 
 @router.post("/cache/jobs/{job_id}/cancel")
 def cache_job_cancel(job_id: str):
-    from v2.data.cache_jobs import get_cache_job_manager
+    from hedge_fund.data.cache_jobs import get_cache_job_manager
     result = get_cache_job_manager(_DB_PATH).cancel(job_id)
     if result is None:
         raise HTTPException(status_code=404, detail="cache job not found")
@@ -80,7 +80,7 @@ def cache_job_cancel(job_id: str):
 
 @router.post("/cache/jobs/{job_id}/retry", status_code=202)
 def cache_job_retry(job_id: str):
-    from v2.data.cache_jobs import get_cache_job_manager
+    from hedge_fund.data.cache_jobs import get_cache_job_manager
     result = get_cache_job_manager(_DB_PATH).retry(job_id)
     if result is None:
         raise HTTPException(status_code=409, detail="cache job has no failed items to retry")
@@ -95,9 +95,9 @@ def cache_fetch(data: CacheFetchRequest):
     """
     # Compatibility endpoint: new UI uses background jobs, while older clients
     # retain the original response shape through the same normalized cache service.
-    from v2.data.cache_service import fetch_security_data
-    from v2.data.market import USMarketDataAdapter
-    from v2.data import yfinance_client as yahoo_module
+    from hedge_fund.data.cache_service import fetch_security_data
+    from hedge_fund.data.market import USMarketDataAdapter
+    from hedge_fund.data import yfinance_client as yahoo_module
 
     start_date, end_date = data.start_date.isoformat(), data.end_date.isoformat()
     adapter = USMarketDataAdapter(client=yahoo_module.YFinanceClient())
@@ -138,7 +138,7 @@ def cache_fetch(data: CacheFetchRequest):
 def cache_list():
     """List all cached tickers with data ranges."""
     from sqlalchemy import func
-    from v2.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache
+    from hedge_fund.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache
 
     init_db(_DB_PATH)
     session = get_session(_DB_PATH)
@@ -208,7 +208,7 @@ def cached_securities_list(
 ):
     """Paginated cache inventory used by the cache explorer table."""
     from sqlalchemy import and_, func
-    from v2.persistence.models import PriceCache, Security
+    from hedge_fund.persistence.models import PriceCache, Security
 
     cached = cache_list()["cached"]
     tickers = list(cached)
@@ -295,7 +295,7 @@ def cached_security_detail(
     end_date: date | None = None,
 ):
     """Return all effective cached data for one security and optional date range."""
-    from v2.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache, Security
+    from hedge_fund.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache, Security
 
     symbol = CacheFetchRequest.valid_benchmark(ticker)
     init_db(_DB_PATH)
@@ -367,7 +367,7 @@ def cached_security_detail(
 @router.delete("/cache/{ticker}")
 def cache_delete(ticker: str):
     """Delete all cached data for a ticker."""
-    from v2.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache
+    from hedge_fund.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache
 
     t = ticker.upper().strip()
     init_db(_DB_PATH)

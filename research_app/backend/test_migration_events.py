@@ -3,11 +3,11 @@ import json
 import pytest
 from pathlib import Path
 
-from v2.data.models import FinancialMetrics
-from v2.persistence.database import get_session
-from v2.persistence.models import MetricsCache, PriceCache, SimCycleRecord, SimPersonaState
-from v2.simulation.runner import SimRunner, get_sim_result
-from v2.simulation.test_persona_state import SequenceLlm, RESPONSE
+from hedge_fund.data.models import FinancialMetrics
+from hedge_fund.persistence.database import get_session
+from hedge_fund.persistence.models import MetricsCache, PriceCache, SimCycleRecord, SimPersonaState
+from hedge_fund.simulation.runner import SimRunner, get_sim_result
+from hedge_fund.simulation.test_persona_state import SequenceLlm, RESPONSE
 
 
 @pytest.fixture

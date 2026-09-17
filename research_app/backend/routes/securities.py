@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from fastapi import APIRouter, HTTPException, Query
-from v2.persistence.database import get_session, init_db
+from hedge_fund.persistence.database import get_session, init_db
 from research_app.backend.config import settings
 from .schemas import SecurityFilterRequest
 
@@ -11,7 +11,7 @@ _DB_PATH = str(settings.fund_db)
 
 def _security_query(session, filters: SecurityFilterRequest):
     from sqlalchemy import or_
-    from v2.persistence.models import Security
+    from hedge_fund.persistence.models import Security
 
     query = session.query(Security).filter(Security.market == "US")
     if filters.active:
@@ -39,7 +39,7 @@ def _security_dict(row) -> dict:
 
 
 def _security_order(sort_by: str, sort_dir: str):
-    from v2.persistence.models import Security
+    from hedge_fund.persistence.models import Security
 
     columns = {
         "symbol": Security.symbol,
@@ -53,7 +53,7 @@ def _security_order(sort_by: str, sort_dir: str):
 
 @router.post("/securities/sync")
 def securities_sync():
-    from v2.data.cache_service import sync_us_catalog
+    from hedge_fund.data.cache_service import sync_us_catalog
     try:
         return sync_us_catalog(_DB_PATH)
     except Exception as exc:
@@ -74,7 +74,7 @@ def securities_list(
     sort_dir: str = Query(default="asc", pattern=r"^(asc|desc)$"),
 ):
     from sqlalchemy import distinct
-    from v2.persistence.models import Security
+    from hedge_fund.persistence.models import Security
 
     init_db(_DB_PATH)
     filters = SecurityFilterRequest(search=search, exchange=exchange, asset_type=asset_type, active=active, selectable=selectable)
@@ -95,7 +95,7 @@ def securities_selection(
     sort_dir: str = Query(default="asc", pattern=r"^(asc|desc)$"),
 ):
     """Return the complete filtered selection as typed IDs, not a filter token."""
-    from v2.persistence.models import Security
+    from hedge_fund.persistence.models import Security
 
     init_db(_DB_PATH)
     filters = SecurityFilterRequest(search=search, exchange=exchange, asset_type=asset_type)
@@ -120,7 +120,7 @@ def securities_selection(
 
 @router.get("/securities/{security_id}")
 def security_detail(security_id: int):
-    from v2.persistence.models import Security
+    from hedge_fund.persistence.models import Security
     init_db(_DB_PATH)
     with get_session(_DB_PATH) as session:
         row = session.get(Security, security_id)

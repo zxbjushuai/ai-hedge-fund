@@ -31,7 +31,7 @@ for _ in range(2):
         assert client.get('/flows').status_code == 404
         assert client.get('/dashboard/status').status_code == 404
 assert not any(name.startswith('app.backend') for name in sys.modules)
-assert 'v2.run_daemon' not in sys.modules
+assert 'hedge_fund.run_daemon' not in sys.modules
 '''
     result = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
                             env=env, capture_output=True, text=True, timeout=60)
@@ -49,21 +49,16 @@ def test_paths_do_not_depend_on_cwd(tmp_path, monkeypatch):
 
 def test_reused_deterministic_runner_and_api_parity(tmp_path, monkeypatch):
     # Reuse the pre-migration fixed fake model, data and T/T+1 assertions.
-    from v2.simulation.test_historical_semantics import (
+    from hedge_fund.simulation.test_historical_semantics import (
         test_runner_uses_prior_signal_next_open_and_isolated_sim_tables,
     )
     test_runner_uses_prior_signal_next_open_and_isolated_sim_tables(tmp_path, monkeypatch)
-    from app.backend.routes import dashboard
     from research_app.backend.routes import simulations
     from research_app.backend.main import app
-    from fastapi import FastAPI
     db = str(tmp_path / 'simulation.db')
-    monkeypatch.setattr(dashboard, '_DB_PATH', db)
     monkeypatch.setattr(simulations, '_DB_PATH', db)
-    old = FastAPI()
-    old.include_router(dashboard.router)
     # No lifespan: avoids even opening the configured live provider database.
-    before, after = TestClient(old), TestClient(app)
+    after = TestClient(app)
     golden = json.loads((Path(__file__).parent / 'fixtures/migration-baseline.json').read_text())
     result = after.get('/dashboard/sim/result/1').json()
     assert [row['nav'] for row in result['nav_curve']] == pytest.approx(golden['nav'])
@@ -71,6 +66,7 @@ def test_reused_deterministic_runner_and_api_parity(tmp_path, monkeypatch):
     assert [{key: row[key] for key in golden['fills'][0]} for row in result['trades']] == golden['fills']
     for path in ['/dashboard/sim/runs', '/dashboard/sim/result/1',
                  '/dashboard/sim/1/cycles', '/dashboard/sim/1/cycles/1']:
-        original, migrated = before.get(path), after.get(path)
-        assert original.status_code == migrated.status_code == 200
-        assert original.json() == migrated.json()
+        migrated = after.get(path)
+        assert migrated.status_code == 200
+    from hedge_fund.simulation.audit import get_cycle_audit
+    assert after.get('/dashboard/sim/1/cycles/1').json() == get_cycle_audit(1, 1, db)

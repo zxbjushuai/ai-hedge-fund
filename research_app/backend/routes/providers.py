@@ -27,7 +27,7 @@ def create_llm_provider(data: LlmProviderCreateRequest, db: Session = Depends(ge
     from research_app.backend.services.llm_provider_service import (
         connection_dict, ensure_provider_tables, normalize_connection_base_url,
     )
-    from v2.llm.registry import legacy_provider_type
+    from hedge_fund.llm.registry import legacy_provider_type
 
     ensure_provider_tables(db)
     vendor = (data.vendor or "").strip().lower()
@@ -270,7 +270,7 @@ async def llm_models():
     """List v2-supported models and credential availability, never secrets."""
     from research_app.backend.database.connection import SessionLocal
     from research_app.backend.services.v2_llm_service import credential_configured
-    from v2.llm import catalog
+    from hedge_fund.llm import catalog
 
     session = SessionLocal()
     try:

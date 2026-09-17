@@ -12,8 +12,8 @@
 - [x] Resolve baseline split-sizing acceptance failure (negative cash in unlevered fixture), authorized by user.
 - [x] Provide explicit browser/shutdown checklist; syntax-check launcher without stopping occupied user ports.
 - [x] Verify path stability, legacy data reads, fake LLM simulation and startup cleanup (user-confirmed interactive portion).
-- [ ] Obtain exact deletion approval and permission for required Git checkpoints.
-- [ ] Merge fc1bf25 and migrate the core package to hedge_fund.
-- [ ] Verify both upstream and custom semantics.
+- [x] Obtain exact deletion approval and permission for required Git checkpoints.
+- [x] Merge fc1bf25 and migrate the core package to hedge_fund.
+- [x] Verify both upstream and custom semantics (offline suite, CLI receipts, TUI home, Web backup-copy browser smoke).
 - [ ] Remove approved obsolete code and dependencies; preserve DB tables.
 - [ ] Complete stage 4 acceptance and handoff; integrate only when authorized.

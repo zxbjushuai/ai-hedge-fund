@@ -21,7 +21,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    from v2.logging_config import configure_logging
+    from hedge_fund.logging_config import configure_logging
     configure_logging(ROOT / "logs")
     import uvicorn
     uvicorn.run("research_app.backend.main:app", host=args.host, port=args.port, log_config=None)

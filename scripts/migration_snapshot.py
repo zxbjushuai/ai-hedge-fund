@@ -40,7 +40,7 @@ def main():
             "integrity": integrity, "counts": counts,
             "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         }
-    report["fund_yaml"] = os.environ.get("FUND_SPEC_PATH", str(ROOT / "v2/funds/example.yaml"))
+    report["fund_yaml"] = os.environ.get("FUND_SPEC_PATH", str(ROOT / "hedge_fund/fund/example.yaml"))
     report["prompt_cache"] = os.environ.get("PROMPT_CACHE_DIR", str(ROOT / ".v2_cache/llm"))
     (output / "manifest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))

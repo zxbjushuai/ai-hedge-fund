@@ -32,7 +32,7 @@ Relative paths are resolved against the repository root, not the shell directory
 | --- | --- |
 | FUND_DB_PATH | fund.db |
 | LLM_DB_PATH | app/backend/hedge_fund.db |
-| FUND_SPEC_PATH | v2/funds/example.yaml |
+| FUND_SPEC_PATH | hedge_fund/fund/example.yaml |
 | PROMPT_CACHE_DIR | .v2_cache/llm |
 
 These defaults deliberately retain existing storage. Nothing moves or deletes
@@ -43,7 +43,7 @@ the only copy of your data. Provider credentials must never be committed.
 ## Offline acceptance
 
 ```powershell
-poetry run pytest research_app/backend/ v2/ app/backend/ -q
+poetry run pytest research_app/backend/ hedge_fund/ app/backend/ -q
 npm.cmd --prefix research_app/frontend run build
 npm.cmd --prefix research_app/frontend run lint
 ```

@@ -17,8 +17,8 @@ def _resolve_simulation_llm(data: SimRunRequest, required: bool):
     if data.llm_connection_id is not None:
         from research_app.backend.database.connection import SessionLocal
         from research_app.backend.services.llm_provider_service import resolve_connection
-        from v2.llm import LlmProtocol, LlmRuntimeConfig, make_connection_llm
-        from v2.llm.adapter_registry import get_vendor
+        from hedge_fund.llm import LlmProtocol, LlmRuntimeConfig, make_connection_llm
+        from hedge_fund.llm.adapter_registry import get_vendor
 
         session = SessionLocal()
         try:
@@ -49,7 +49,7 @@ def _resolve_simulation_llm(data: SimRunRequest, required: bool):
     if data.provider is None:
         if not required:
             return None
-        from v2.llm import get_llm
+        from hedge_fund.llm import get_llm
         client = get_llm()  # compatibility for older API callers and CLI-style setup
         return ResolvedSimulationLlm(
             client=client,
@@ -60,7 +60,8 @@ def _resolve_simulation_llm(data: SimRunRequest, required: bool):
 
     from research_app.backend.database.connection import SessionLocal
     from research_app.backend.services.v2_llm_service import resolve_credential
-    from v2.llm import make_llm, validate_selection
+    from hedge_fund.llm import validate_selection
+    from hedge_fund.llm.providers import make_llm
 
     provider, model = validate_selection(data.provider, data.model or "")
     session = SessionLocal()
@@ -78,8 +79,8 @@ def _resolve_simulation_llm(data: SimRunRequest, required: bool):
 
 
 def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
-    from v2.fund import load_spec
-    from v2.simulation.runner import (
+    from hedge_fund.fund import load_spec
+    from hedge_fund.simulation.runner import (
         _trading_days,
         disable_unavailable_models,
         estimate_persona_event_schedule,
@@ -99,7 +100,7 @@ def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
             "message": "simulation data preflight failed", "errors": errors,
         })
     warnings.extend(disable_unavailable_models(spec, _DB_PATH, tickers, end_date))
-    from v2.signals import ALPHA_MODEL_REGISTRY, LLMAgent
+    from hedge_fund.signals import ALPHA_MODEL_REGISTRY, LLMAgent
     persona_names = {
         model.name
         for strategy in spec.strategies
@@ -188,7 +189,7 @@ def sim_run(data: SimRunRequest):
                 "message": "LLM call confirmation required",
                 **preflight,
             })
-        from v2.simulation.runner import SimRunner
+        from hedge_fund.simulation.runner import SimRunner
         if resolved is None:
             resolved = _resolve_simulation_llm(data, required=preflight["provider"] != "none")
         llm = getattr(resolved, "client", resolved)
@@ -225,7 +226,7 @@ def sim_run(data: SimRunRequest):
 def sim_status(sim_id: int):
     """Get simulation progress."""
     try:
-        from v2.simulation.runner import get_sim_status
+        from hedge_fund.simulation.runner import get_sim_status
         result = get_sim_status(sim_id, _DB_PATH)
         if result is None:
             raise HTTPException(status_code=404, detail="sim not found")
@@ -240,7 +241,7 @@ def sim_status(sim_id: int):
 def sim_result(sim_id: int):
     """Get full simulation results."""
     try:
-        from v2.simulation.runner import get_sim_result
+        from hedge_fund.simulation.runner import get_sim_result
         result = get_sim_result(sim_id, _DB_PATH)
         if result is None:
             raise HTTPException(status_code=404, detail="sim not found")
@@ -265,7 +266,7 @@ def sim_cycles(
     if not 1 <= limit <= 500 or offset < 0:
         raise HTTPException(status_code=422, detail="invalid audit pagination")
     try:
-        from v2.simulation.audit import list_cycle_audits
+        from hedge_fund.simulation.audit import list_cycle_audits
 
         result = list_cycle_audits(
             sim_id,
@@ -291,7 +292,7 @@ def sim_cycles(
 def sim_cycle_detail(sim_id: int, cycle_id: int):
     """Return one full serialized cycle after run ownership validation."""
     try:
-        from v2.simulation.audit import get_cycle_audit
+        from hedge_fund.simulation.audit import get_cycle_audit
 
         result = get_cycle_audit(sim_id, cycle_id, _DB_PATH)
         if result is None:
@@ -308,7 +309,7 @@ def sim_cycle_detail(sim_id: int, cycle_id: int):
 def sim_runs():
     """List all simulation runs."""
     try:
-        from v2.simulation.runner import list_sim_runs
+        from hedge_fund.simulation.runner import list_sim_runs
         return {"runs": list_sim_runs(_DB_PATH)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

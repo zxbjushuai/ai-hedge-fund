@@ -150,7 +150,7 @@ class LlmProviderCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def complete_connection_kind(self):
-        from v2.llm.registry import connection_kind_for_legacy
+        from hedge_fund.llm.registry import connection_kind_for_legacy
 
         if self.vendor is not None or self.protocol is not None:
             if not self.vendor or not self.protocol:

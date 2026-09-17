@@ -6,7 +6,7 @@ from research_app.backend.config import settings
 from research_app.backend.database.connection import SessionLocal
 from research_app.backend.services.llm_provider_service import ensure_provider_tables
 from research_app.backend.routes import cache, providers, securities, simulations, universes
-from v2.persistence.database import init_db
+from hedge_fund.persistence.database import init_db
 
 
 @asynccontextmanager

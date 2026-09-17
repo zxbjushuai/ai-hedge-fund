@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.exc import IntegrityError
-from v2.persistence.database import get_session, init_db
+from hedge_fund.persistence.database import get_session, init_db
 from research_app.backend.config import settings
 from .schemas import UniverseCreateRequest, UniverseUpdateRequest
 from .securities import _security_dict
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _DB_PATH = str(settings.fund_db)
 
 def _universe_dict(session, universe) -> dict:
-    from v2.persistence.models import SavedUniverseMember, Security
+    from hedge_fund.persistence.models import SavedUniverseMember, Security
     rows = session.query(SavedUniverseMember, Security).join(Security, Security.id == SavedUniverseMember.security_id).filter(SavedUniverseMember.universe_id == universe.id).order_by(SavedUniverseMember.position).all()
     return {
         "id": universe.id, "name": universe.name, "market": universe.market,
@@ -25,7 +25,7 @@ def _universe_dict(session, universe) -> dict:
 
 @router.get("/universes")
 def universes_list(include_archived: bool = False):
-    from v2.persistence.models import SavedUniverse
+    from hedge_fund.persistence.models import SavedUniverse
     init_db(_DB_PATH)
     with get_session(_DB_PATH) as session:
         query = session.query(SavedUniverse)
@@ -35,7 +35,7 @@ def universes_list(include_archived: bool = False):
 
 
 def _replace_universe_members(session, universe_id: int, security_ids: list[int]) -> None:
-    from v2.persistence.models import SavedUniverseMember, Security
+    from hedge_fund.persistence.models import SavedUniverseMember, Security
     unique_ids = list(dict.fromkeys(security_ids))
     found = {
         row[0]
@@ -55,7 +55,7 @@ def _replace_universe_members(session, universe_id: int, security_ids: list[int]
 
 @router.post("/universes", status_code=201)
 def universe_create(data: UniverseCreateRequest):
-    from v2.persistence.models import SavedUniverse
+    from hedge_fund.persistence.models import SavedUniverse
     init_db(_DB_PATH)
     with get_session(_DB_PATH) as session:
         row = SavedUniverse(name=data.name, market="US")
@@ -72,7 +72,7 @@ def universe_create(data: UniverseCreateRequest):
 
 @router.patch("/universes/{universe_id}")
 def universe_update(universe_id: int, data: UniverseUpdateRequest):
-    from v2.persistence.models import SavedUniverse
+    from hedge_fund.persistence.models import SavedUniverse
     init_db(_DB_PATH)
     with get_session(_DB_PATH) as session:
         row = session.get(SavedUniverse, universe_id)

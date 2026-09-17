@@ -10,13 +10,13 @@ from sqlalchemy.orm import Session
 
 from research_app.backend.database.connection import Base, engine
 from research_app.backend.database.models import ApiKey, LlmProviderConnection, LlmProviderModel
-from v2.llm.adapter_registry import validate_vendor_protocol
-from v2.llm.registry import (
+from hedge_fund.llm.adapter_registry import validate_vendor_protocol
+from hedge_fund.llm.registry import (
     connection_kind_for_legacy,
     legacy_provider_type,
     models_for_connection,
 )
-from v2.llm.types import LlmProtocol, LlmRuntimeConfig
+from hedge_fund.llm.types import LlmProtocol, LlmRuntimeConfig
 
 
 SUPPORTED_PROVIDER_TYPES = {

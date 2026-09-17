@@ -7,7 +7,7 @@ import os
 from sqlalchemy.orm import Session
 
 from research_app.backend.repositories.api_key_repository import ApiKeyRepository
-from v2.llm.registry import provider_spec
+from hedge_fund.llm.registry import provider_spec
 
 
 def resolve_credential(provider: str, db: Session) -> str | None:

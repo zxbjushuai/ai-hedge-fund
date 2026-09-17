@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from research_app.backend.database.connection import Base
 from research_app.backend.database.models import ApiKey, LlmProviderConnection, LlmProviderModel
 from research_app.backend.services import llm_provider_service as service
-from v2.llm import protocols as protocol_module
+from hedge_fund.llm import protocols as protocol_module
 
 
 @pytest.fixture()
@@ -283,7 +283,7 @@ def test_managed_resolution_passes_immutable_connection_values(db, monkeypatch):
     from types import SimpleNamespace
     from research_app.backend.routes import simulations as dashboard
     import research_app.backend.database.connection as connection_module
-    import v2.llm
+    import hedge_fund.llm
 
     connection = LlmProviderConnection(
         name="Proxy", provider_type="openai",
@@ -303,7 +303,7 @@ def test_managed_resolution_passes_immutable_connection_values(db, monkeypatch):
         captured.append(config)
         return SimpleNamespace(provider=config.vendor, protocol=config.protocol.value, model=config.model)
 
-    monkeypatch.setattr(v2.llm, "make_connection_llm", fake_make)
+    monkeypatch.setattr(hedge_fund.llm, "make_connection_llm", fake_make)
     request = dashboard.SimRunRequest(
         tickers=["AAPL"], start_date="2025-01-01", end_date="2025-01-02",
         initial_capital=1000, llm_connection_id=connection.id, model="private/model",
@@ -330,7 +330,7 @@ def test_opencode_go_resolution_creates_a_new_session_for_each_simulation(
     from types import SimpleNamespace
     from research_app.backend.routes import simulations as dashboard
     import research_app.backend.database.connection as connection_module
-    import v2.llm
+    import hedge_fund.llm
 
     connection = LlmProviderConnection(
         name=f"Go {provider_type}", provider_type=provider_type,
@@ -352,7 +352,7 @@ def test_opencode_go_resolution_creates_a_new_session_for_each_simulation(
         captured.append(config)
         return SimpleNamespace(provider=config.vendor, protocol=config.protocol.value, model=config.model)
 
-    monkeypatch.setattr(v2.llm, "make_connection_llm", fake_make)
+    monkeypatch.setattr(hedge_fund.llm, "make_connection_llm", fake_make)
     request = dashboard.SimRunRequest(
         tickers=["AAPL"], start_date="2025-01-01", end_date="2025-01-02",
         initial_capital=1000, llm_connection_id=connection.id,
@@ -369,7 +369,7 @@ def test_opencode_go_resolution_creates_a_new_session_for_each_simulation(
 
 def test_concurrent_managed_clients_do_not_mix_base_urls_or_keys(monkeypatch):
     import langchain_openai
-    from v2.llm.providers import make_llm
+    from hedge_fund.llm.providers import make_llm
 
     barrier = threading.Barrier(2)
     calls = []
