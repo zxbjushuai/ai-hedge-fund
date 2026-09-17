@@ -15,6 +15,7 @@ from v2.persistence.models import (
     SimCycleTickerIndex,
     SimNavSnapshot,
     SimPersonaState,
+    SimCorporateAction,
     SimRun,
     SimTradeLog,
 )
@@ -72,6 +73,18 @@ def persist_completed_cycle(
                     else fill.quantity * fill.price
                 ),
                 cycle_date=record.execution_date or record.as_of,
+            ))
+        for action in record.corporate_actions:
+            session.add(SimCorporateAction(
+                sim_run_id=sim_run_id,
+                cycle_number=cycle_number,
+                action_date=record.execution_date or record.as_of,
+                ticker=action.ticker,
+                action_type=action.action_type,
+                value=action.value,
+                shares_before=action.shares_before,
+                shares_after=action.shares_after,
+                cash_amount=action.cash_amount,
             ))
         _upsert_persona_states(session, sim_run_id, record)
         session.commit()

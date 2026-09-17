@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
 
+from v2.data.errors import NoDataError, classify_market_error
 from v2.data.models import (
     CompanyFacts,
     CompanyNews,
@@ -102,6 +103,10 @@ def _ratio(numerator: float | None, denominator: float | None) -> float | None:
     return round(numerator / denominator, 4)
 
 
+def _times(value: float | None, multiplier: float) -> float | None:
+    return None if value is None else value * multiplier
+
+
 def _retry(func, *args, **kwargs):
     """Call func with retries on rate-limited errors."""
     for attempt, delay in enumerate(_RETRY_DELAYS + (0,)):
@@ -133,6 +138,51 @@ class YFinanceClient:
     # Prices
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _prices_from_frame(df, ticker: str) -> list[Price]:
+        prices: list[Price] = []
+        if df is None or df.empty:
+            return prices
+        for idx, row in df.iterrows():
+            required = [_safe_float(row.get(name)) for name in ("Open", "Close", "High", "Low")]
+            if any(value is None for value in required):
+                continue
+            prices.append(Price(
+                open=required[0], close=required[1], high=required[2], low=required[3],
+                volume=int(_safe_float(row.get("Volume")) or 0), time=str(idx.isoformat() if hasattr(idx, "isoformat") else idx),
+                adjusted_close=_safe_float(row.get("Adj Close")),
+                dividend=_safe_float(row.get("Dividends")) or 0.0,
+                split_ratio=_safe_float(row.get("Stock Splits")) or 0.0,
+                source="yahoo", price_mode="raw",
+            ))
+        return prices
+
+    def get_prices_batch(self, tickers: list[str], start_date: str, end_date: str) -> dict[str, list[Price]]:
+        """Download a Yahoo batch once; callers retry missing members individually."""
+        normalized = list(dict.fromkeys(ticker.strip().upper() for ticker in tickers if ticker.strip()))
+        if not normalized:
+            return {}
+        inclusive_end = (datetime.strptime(end_date[:10], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            frame = _retry(lambda: yf.download(
+                tickers=normalized, start=start_date, end=inclusive_end, interval="1d",
+                group_by="ticker", auto_adjust=False, back_adjust=False, actions=True,
+                threads=min(8, len(normalized)), progress=False, timeout=30,
+            ))
+            result: dict[str, list[Price]] = {}
+            if len(normalized) == 1 and not isinstance(frame.columns, pd.MultiIndex):
+                result[normalized[0]] = self._prices_from_frame(frame, normalized[0])
+            else:
+                for ticker in normalized:
+                    try:
+                        ticker_frame = frame[ticker]
+                    except (KeyError, TypeError):
+                        ticker_frame = pd.DataFrame()
+                    result[ticker] = self._prices_from_frame(ticker_frame, ticker)
+            return result
+        except Exception as exc:
+            raise classify_market_error(exc) from exc
+
     def get_prices(
         self,
         ticker: str,
@@ -150,28 +200,21 @@ class YFinanceClient:
             inclusive_end = (
                 datetime.strptime(end_date[:10], "%Y-%m-%d") + timedelta(days=1)
             ).strftime("%Y-%m-%d")
-            df = _retry(lambda: stock.history(start=start_date, end=inclusive_end, interval=interval))
+            df = _retry(lambda: stock.history(
+                start=start_date,
+                end=inclusive_end,
+                interval=interval,
+                auto_adjust=False,
+                back_adjust=False,
+                actions=True,
+                timeout=30,
+            ))
             if df is None or df.empty:
-                return []
-            prices: list[Price] = []
-            for idx, row in df.iterrows():
-                ts = idx
-                if hasattr(ts, "isoformat"):
-                    ts = ts.isoformat()
-                prices.append(
-                    Price(
-                        open=float(row["Open"]),
-                        close=float(row["Close"]),
-                        high=float(row["High"]),
-                        low=float(row["Low"]),
-                        volume=int(row["Volume"]),
-                        time=str(ts),
-                    )
-                )
-            return prices
+                raise NoDataError(f"Yahoo returned no prices for {ticker}")
+            return self._prices_from_frame(df, ticker)
         except Exception as e:
             logger.warning("yfinance get_prices(%s) failed: %s", ticker, e)
-            return []
+            raise classify_market_error(e) from e
 
     # ------------------------------------------------------------------
     # Financial Metrics
@@ -246,7 +289,7 @@ class YFinanceClient:
                 gross_margin = _ratio(gross_profit, revenue)
                 op_margin = _ratio(op_income, revenue)
                 net_margin = _ratio(net_income, revenue)
-                roe_annual = _ratio(net_income * 4, equity)
+                roe_annual = _ratio(_times(net_income, 4), equity)
                 debt_to_equity = _ratio(total_debt, equity)
                 current_ratio = _ratio(current_assets, current_liabilities)
                 bvps = _ratio(equity, shares)
@@ -264,7 +307,7 @@ class YFinanceClient:
                         operating_margin=op_margin,
                         net_margin=net_margin,
                         return_on_equity=roe_annual,
-                        return_on_assets=_ratio(net_income * 4, total_assets),
+                        return_on_assets=_ratio(_times(net_income, 4), total_assets),
                         current_ratio=current_ratio,
                         debt_to_equity=debt_to_equity,
                         revenue_growth=revenue_growth,
@@ -280,7 +323,7 @@ class YFinanceClient:
 
         except Exception as e:
             logger.warning("yfinance get_financial_metrics(%s) failed: %s", ticker, e)
-            return []
+            raise classify_market_error(e) from e
 
     def _fallback_metrics(
         self, ticker: str, end_date: str, period: str, info: dict
@@ -421,6 +464,7 @@ class YFinanceClient:
         try:
             stock = yf.Ticker(ticker)
             info = {}
+            dates_error: Exception | None = None
 
             try:
                 dates = _retry(lambda: stock.get_earnings_dates(limit=limit))
@@ -444,6 +488,7 @@ class YFinanceClient:
                             ))
                     return records
             except Exception as exc:
+                dates_error = exc
                 logger.warning(
                     "yfinance get_earnings_dates(%s) failed; PEAD may be unavailable: %s",
                     ticker,
@@ -482,13 +527,16 @@ class YFinanceClient:
                                 quarterly=qtr,
                             )
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                if dates_error is None:
+                    dates_error = exc
 
+            if not records and dates_error is not None:
+                raise classify_market_error(dates_error) from dates_error
             return records
         except Exception as e:
             logger.warning("yfinance get_earnings_history(%s) failed: %s", ticker, e)
-            return []
+            raise classify_market_error(e) from e
 
     # ------------------------------------------------------------------
     # Convenience

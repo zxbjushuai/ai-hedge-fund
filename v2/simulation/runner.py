@@ -22,6 +22,7 @@ from v2.persistence.models import (
     SimNavSnapshot, SimRun, SimTradeLog,
 )
 from v2.pipeline import run_cycle
+from v2.pipeline.models import CorporateActionRecord
 from v2.simulation.audit import persist_completed_cycle, persist_failed_cycle
 from v2.simulation.persona_state import PersonaSignalEngine
 
@@ -37,9 +38,11 @@ def _benchmark_closes(
     """Cached benchmark closes in date order for the requested window."""
     with get_session(db_path) as session:
         rows = session.execute(
-            select(PriceCache.date, PriceCache.close).where(
+            select(PriceCache.date, PriceCache.adjusted_close).where(
                 PriceCache.ticker == benchmark.upper(),
                 PriceCache.date >= start, PriceCache.date <= end,
+                PriceCache.price_mode == "raw",
+                PriceCache.adjusted_close.is_not(None),
             )
             .order_by(PriceCache.date)
         ).all()
@@ -210,16 +213,35 @@ def validate_cached_data(
         )
     tickers_with_prices = 0
     with get_session(db_path) as session:
+        benchmark_rows = session.query(PriceCache).filter(
+            PriceCache.ticker == benchmark.upper(),
+            PriceCache.date >= start,
+            PriceCache.date <= end,
+        ).all()
+        if benchmark_rows and any(
+            row.price_mode != "raw" or row.adjusted_close is None
+            for row in benchmark_rows
+        ):
+            errors.append(
+                f"{benchmark}: benchmark cache contains legacy or incomplete price rows; "
+                "refresh benchmark prices in Data Cache"
+            )
         for ticker in tickers:
-            ticker_days = session.query(PriceCache).filter(
+            ticker_rows = session.query(PriceCache).filter(
                 PriceCache.ticker == ticker, PriceCache.date >= start, PriceCache.date <= end
-            ).count()
+            ).all()
+            ticker_days = len(ticker_rows)
             if ticker_days == 0:
                 warnings.append(
                     f"{ticker}: no cached prices in requested range; ticker will be skipped"
                 )
             else:
                 tickers_with_prices += 1
+                if any(row.price_mode != "raw" for row in ticker_rows):
+                    errors.append(
+                        f"{ticker}: cache contains legacy or mixed price modes; "
+                        "refresh prices in Data Cache"
+                    )
             visible_metrics = session.query(MetricsCache).filter(
                 MetricsCache.ticker == ticker, MetricsCache.filing_date <= start
             ).count()
@@ -447,6 +469,7 @@ class SimRunner:
                 signal_day = days[i - 1]
                 opens, closes = self._prices_for_day(day)
                 try:
+                    corporate_actions = self._apply_corporate_actions(broker, day, opens)
                     persona_engine.begin_cycle(i)
                     record = run_cycle(
                         fund, signal_day, broker, data_client,
@@ -454,6 +477,7 @@ class SimRunner:
                         universe=self._tickers,
                         persona_engine=persona_engine,
                     )
+                    record.corporate_actions = corporate_actions
                 except Exception as exc:
                     try:
                         persist_failed_cycle(
@@ -494,6 +518,28 @@ class SimRunner:
                 PriceCache.ticker.in_(self._tickers), PriceCache.date == day
             )).scalars().all()
         return ({r.ticker: r.open for r in rows}, {r.ticker: r.close for r in rows})
+
+    def _apply_corporate_actions(self, broker: SimBroker, day: str, opens: dict[str, float]) -> list[CorporateActionRecord]:
+        """Apply actions to positions carried from the preceding close."""
+        with get_session(self._db_path) as session:
+            rows = session.execute(select(PriceCache).where(
+                PriceCache.ticker.in_(self._tickers),
+                PriceCache.date == day,
+                PriceCache.price_mode == "raw",
+            )).scalars().all()
+        actions: list[CorporateActionRecord] = []
+        for row in rows:
+            if row.split_ratio and row.split_ratio > 0 and row.split_ratio != 1:
+                if row.ticker not in opens:
+                    raise ValueError(f"cannot settle {row.ticker} split without execution-day open")
+                action = broker.apply_split(row.ticker, row.split_ratio, opens[row.ticker])
+                if action:
+                    actions.append(CorporateActionRecord.model_validate(action))
+            if row.dividend:
+                action = broker.apply_dividend(row.ticker, row.dividend)
+                if action:
+                    actions.append(CorporateActionRecord.model_validate(action))
+        return actions
 
     def _set_status(self, status: str) -> None:
         session = get_session(self._db_path)

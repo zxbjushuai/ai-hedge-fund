@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { Play, RefreshCw } from 'lucide-react';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { SimResults } from './sim-results';
+import { SecurityBrowser } from './security-browser';
 
 const dateDaysAgo = (days: number) =>
   new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
@@ -163,14 +164,12 @@ export function SimulationPanel() {
           <CardTitle>Run Simulation</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <SecurityBrowser value={tickers} onChange={setTickers} compact />
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Tickers (from cache)</label>
-              <Input value={tickers} onChange={e => setTickers(e.target.value)} placeholder="AAPL,MSFT" />
-            </div>
             <div>
               <label className="text-sm text-muted-foreground mb-1 block">Benchmark</label>
               <Input value={benchmark} onChange={e => setBenchmark(e.target.value)} placeholder="SPY" />
+              <p className="mt-1 text-xs text-muted-foreground">Defines the trading-day grid and comparison return; it is not traded unless selected.</p>
             </div>
             <div>
               <label className="text-sm text-muted-foreground mb-1 block">Start Date</label>

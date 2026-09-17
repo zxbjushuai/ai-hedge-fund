@@ -204,6 +204,11 @@ export function DecisionAudit({ simId, auditAvailable }: Props) {
                       {' · '}ending cash ${record.cash.toLocaleString()} · NAV ${record.nav.toLocaleString()}
                     </p>
                     <div className="mt-2 space-y-1 text-sm">
+                      {record.corporate_actions?.map((action, index) => (
+                        <p key={`action-${index}`} className="text-blue-600">
+                          Corporate action: {action.ticker} {action.action_type} {action.value} · shares {action.shares_before} → {action.shares_after} · cash {action.cash_amount.toFixed(2)}
+                        </p>
+                      ))}
                       {record.orders.map((order, index) => (
                         <p key={`order-${index}`}>Order: {order.side.toUpperCase()} {order.quantity} {order.ticker} @ ${order.price.toFixed(2)}</p>
                       ))}

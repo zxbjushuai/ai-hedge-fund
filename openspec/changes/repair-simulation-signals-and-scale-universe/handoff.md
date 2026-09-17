@@ -8,8 +8,76 @@
 - Workstream 1, Universe and Benchmark: complete in `da62597`
 - Workstreams 2-3, LLM Platform and Cycle Audit: complete in `dd467f1`
 - Parent Phase 2 / Workstream 4, Event-Driven LLM: committed and reviewed, with follow-up defects documented
-- Parent Phase 3, Security Catalog and Batch Cache UX: not started
-- Next recommended change: `add-security-catalog-and-batch-cache`
+- Parent Phase 3 / Workstream 5, US Security Catalog and Batch Cache UX:
+  implemented in the current uncommitted worktree
+- Active change: `add-security-catalog-and-batch-cache`
+
+## Workstream 5 Planning Update: 2026-09-16
+
+- The delivery order is security catalog and market-adapter polymorphism first,
+  followed by batch cache orchestration.
+- The implemented catalog/cache scope is US-only. Provider-native symbols map to
+  a canonical US security identity.
+- The first implementation dispatches by market (`US`, `HK`, `CN`) rather than
+  exposing a general provider-routing platform. US uses Nasdaq Trader for its
+  current catalog and yfinance for raw prices, financials, and earnings.
+- `HK` and `CN` exist only as typed unsupported adapters with TODOs. They make no
+  requests and are not exposed by the UI.
+- Batch progress, cancellation, concurrency limits, backoff, failed-item retry,
+  bulk upserts, and verified coverage are the second delivery step built on the
+  provider contract.
+- Multi-market simulation calendars, currencies, FX conversion, and portfolio
+  valuation are deferred. Simulation retains its current single-benchmark rules.
+
+### Provider contract spike
+
+- Live probes used `AAPL`, `0700.HK`, and `600519.SS`. Yahoo returned OHLCV for
+  all three markets with market-local index timezones, but provider output is not
+  semantically interchangeable without normalization.
+- The current Yahoo adapter omits `auto_adjust`; the installed yfinance defaults
+  it to true. Historical OHLC therefore differs from raw exchange prices around
+  corporate actions. A provider contract must declare adjustment mode and must
+  not fill one series with bars having different adjustment semantics.
+- Raw Yahoo quarterly frames existed for all three samples. The current adapter
+  produced five complete AAPL metric rows but zero Tencent and Kweichow Moutai
+  rows because nullable fields reach arithmetic such as annualization. Absence
+  from the normalized cache can therefore mean adapter failure rather than no
+  upstream data.
+- Yahoo returned EPS actual/estimate/surprise rows for all three samples, but
+  non-US timestamps were represented in a US timezone and the adapter discarded
+  time-of-day. Announcement-date normalization needs provider and exchange
+  timezone provenance.
+- Live Nasdaq directory files expose symbol, name, exchange/category, ETF/test
+  flags, and lot size. The live HKEX workbook exposes stock code, name, category,
+  sub-category, board lot, ISIN, trading currency, and eligibility flags.
+- A Tushare token is configured in the Windows user environment, but live probes
+  initially lacked access. After the account reached 120 points, A-share `daily`
+  succeeded repeatedly; points act as a permission threshold rather than being
+  consumed per query. `stock_basic`, `fina_indicator`, and Hong Kong interfaces
+  still require higher points or separate payment. No secret is stored in this
+  repository. Futu OpenD is not configured.
+- For `600519.SH`, 11 matched September 2026 sessions had raw Tushare and raw
+  Yahoo OHLC differences below 0.00006. Multiplying Tushare volume (lots) by 100
+  exactly matched Yahoo volume (shares) on every session.
+
+### Cross-market yfinance sample
+
+- Universe construction used current market capitalization descending, retained
+  the top 1,000 securities in each market, and sampled ten evenly spaced ranks.
+- A-share prices succeeded for 10/10 samples. Eight returned the full requested
+  year (242 sessions); two recent listings correctly returned only post-listing
+  coverage. All bars used CNY and Asia/Shanghai and had no null OHLCV, duplicate
+  dates, non-positive OHLC, or negative volume.
+- Hong Kong prices succeeded for 9/10 samples with 245 sessions, HKD, and
+  Asia/Hong_Kong. `0638.HK` appeared in Yahoo's screener and metadata but Yahoo
+  returned no prices, proving catalog presence does not guarantee price coverage.
+- Raw Yahoo financial frames were materially less complete than prices. The
+  current project adapter produced at least four normalized periods for 5/10
+  A-share samples and 0/10 Hong Kong samples. Yahoo EPS surprise existed for
+  4/10 A-share and 3/10 Hong Kong samples.
+- Conclusion: the samples remain useful research for future adapters, but the
+  first implemented contract is intentionally US-only. The non-US results do not
+  justify exposing those markets as supported functionality.
 
 ## Review Update: 2026-09-15
 

@@ -181,7 +181,10 @@ This is the original Phase 3 of the parent change. It depends on the run-time un
 
 Scope:
 
-- Add a local searchable security catalog and provider abstraction for catalog synchronization.
+- Add a local searchable US security catalog and a market-level adapter contract.
+- Implement US symbol mapping and data acquisition. Keep Hong Kong and mainland
+  China as typed TODO adapters until reliable catalog, currency, and calendar
+  contracts are designed.
 - Provide filtered, paginated search and saved universes.
 - Replace manual ticker text entry with multi-select, select-page, and select-filtered interactions.
 - Add cached-coverage indicators and data-quality warnings.
@@ -196,6 +199,20 @@ Acceptance boundary:
 - The UI exposes completed, partial, failed, and retryable outcomes.
 
 Non-goal: process-restart recovery for cache jobs in the current single-machine simulation scope.
+
+Implementation order (decision recorded 2026-09-16):
+
+1. Build the US security catalog, canonical identity, Yahoo symbol mapping, and
+   market-data adapter. Use raw Yahoo OHLCV plus adjusted close, dividends, and
+   splits. Keep `HK` and `CN` adapters explicitly unsupported with follow-up TODOs.
+2. Build bounded batch cache jobs on those interfaces, including progress,
+   cancellation, concurrency limits, backoff, failed-item retry, bulk upserts,
+   and requested-versus-actual coverage reporting.
+
+Rationale: retry and batching policy must operate on a stable market adapter and
+typed failures rather than being embedded in the current Yahoo-specific route.
+Cross-market catalogs, portfolio calendars, currencies, FX conversion, and
+multi-benchmark valuation remain outside this workstream.
 
 ## Dependency Graph
 

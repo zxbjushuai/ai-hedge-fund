@@ -24,6 +24,20 @@ def test_sell_updates_cash_and_position():
     assert broker.cash() == pytest.approx(-1_000.0 + 440.0)
 
 
+def test_split_and_dividend_apply_before_new_orders():
+    broker = SimBroker(cash=1_000, fee_rate=0)
+    broker.place_order(Order(ticker="AAA", side="buy", quantity=3, price=100))
+    split = broker.apply_split("AAA", 1.5, 70)
+    assert broker.positions()["AAA"].shares == 4
+    assert split == {
+        "ticker": "AAA", "action_type": "split", "value": 1.5,
+        "shares_before": 3, "shares_after": 4, "cash_amount": 35,
+    }
+    dividend = broker.apply_dividend("AAA", 2)
+    assert dividend["cash_amount"] == 8
+    assert broker.cash() == pytest.approx(743)
+
+
 def test_position_removed_at_zero():
     broker = SimBroker(cash=1_000.0, fee_rate=0.0)
     broker.place_order(Order(ticker="AAPL", side="buy", quantity=5, price=100.0))

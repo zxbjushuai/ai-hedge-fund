@@ -15,7 +15,7 @@ from v2.data.models import EarningsData, EarningsRecord, FinancialMetrics
 from v2.fund import FundSpec, PersonaRefreshPolicy
 from v2.llm import PromptCache
 from v2.persistence.database import get_session
-from v2.persistence.models import MetricsCache, PriceCache, SimPersonaState, SimRun
+from v2.persistence.models import MetricsCache, PriceCache, SimCorporateAction, SimPersonaState, SimRun
 from v2.pipeline.models import CycleRecord
 from v2.signals import BuffettAgent
 from v2.simulation.audit import persist_completed_cycle
@@ -309,6 +309,10 @@ def test_persona_state_is_persisted_with_cycle_atomically(tmp_path):
         spec=spec, universe=["AAPL"], marks={"AAPL": 100},
         execution_prices={}, valuation_prices={}, skipped=[], strategies=[],
         persona_events=[event], target_weights={}, clamps=[], final_weights={},
+        corporate_actions=[{
+            "ticker": "AAPL", "action_type": "dividend", "value": 1,
+            "shares_before": 5, "shares_after": 5, "cash_amount": 5,
+        }],
         equity_before=1000, cash_before=1000, orders=[], fills=[], positions={},
         cash=1000, nav=1000,
     )
@@ -328,11 +332,13 @@ def test_persona_state_is_persisted_with_cycle_atomically(tmp_path):
         assert state.source_signal_date == "2024-01-02"
         assert state.valuation_anchor == 100
         assert json.loads(state.signal_payload)["value"] == signal.value
+        assert session.execute(select(SimCorporateAction)).scalar_one().cash_amount == 5
 
     with pytest.raises(IntegrityError):
         persist_completed_cycle(str(db), sim_id, 1, record, 1000)
     with get_session(str(db)) as session:
         assert session.query(SimPersonaState).count() == 1
+        assert session.query(SimCorporateAction).count() == 1
 
 
 def test_concurrent_simulation_engines_do_not_share_persona_state(tmp_path):

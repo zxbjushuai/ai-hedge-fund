@@ -7,11 +7,11 @@ import os
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timezone
 from typing import Iterator
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -58,6 +58,82 @@ class CacheFetchRequest(BaseModel):
         if (self.end_date - self.start_date).days > 3650:
             raise ValueError("date range cannot exceed 10 years")
         return self
+
+
+class SecurityFilterRequest(BaseModel):
+    search: str = Field(default="", max_length=100)
+    exchange: str | None = Field(default=None, max_length=32)
+    asset_type: str | None = Field(default=None, pattern=r"^(equity|etf|other)$")
+    active: bool = True
+    selectable: bool = True
+
+
+class CacheSelectionRequest(BaseModel):
+    security_ids: list[int] | None = Field(default=None, max_length=20000)
+    universe_id: int | None = Field(default=None, gt=0)
+    filter: SecurityFilterRequest | None = None
+    tickers: list[str] | None = Field(default=None, max_length=20000)
+
+    @field_validator("tickers")
+    @classmethod
+    def normalize_selection_tickers(cls, values: list[str] | None):
+        return None if values is None else CacheFetchRequest.valid_tickers(values)
+
+    @model_validator(mode="after")
+    def exactly_one_selection(self):
+        if sum(value is not None for value in (self.security_ids, self.universe_id, self.filter, self.tickers)) != 1:
+            raise ValueError("select exactly one of security_ids, universe_id, filter, or tickers")
+        if self.security_ids is not None and not self.security_ids:
+            raise ValueError("security_ids cannot be empty")
+        if self.tickers is not None and not self.tickers:
+            raise ValueError("tickers cannot be empty")
+        return self
+
+
+class CacheJobCreateRequest(BaseModel):
+    selection: CacheSelectionRequest
+    benchmark: str = "SPY"
+    start_date: date
+    end_date: date
+    data_types: list[str] = Field(default_factory=lambda: ["prices"])
+    force: bool = False
+
+    @field_validator("benchmark")
+    @classmethod
+    def normalize_job_benchmark(cls, value: str):
+        return CacheFetchRequest.valid_benchmark(value)
+
+    @field_validator("data_types")
+    @classmethod
+    def valid_data_types(cls, values: list[str]):
+        values = list(dict.fromkeys(values))
+        if not values or any(value not in {"prices", "metrics", "earnings"} for value in values):
+            raise ValueError("data_types must contain prices, metrics, or earnings")
+        return values
+
+    @model_validator(mode="after")
+    def valid_job_range(self):
+        if self.start_date > self.end_date:
+            raise ValueError("start_date must be on or before end_date")
+        if (self.end_date - self.start_date).days > 3650:
+            raise ValueError("date range cannot exceed 10 years")
+        return self
+
+
+class UniverseCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    security_ids: list[int] = Field(min_length=1, max_length=20000)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_universe_name(cls, value: str):
+        return value.strip()
+
+
+class UniverseUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    security_ids: list[int] | None = Field(default=None, min_length=1, max_length=20000)
+    archived: bool | None = None
 
 
 class SimRunRequest(CacheFetchRequest):
@@ -264,172 +340,334 @@ def get_status():
 # ---------------------------------------------------------------------------
 
 
+def _security_query(session, filters: SecurityFilterRequest):
+    from sqlalchemy import or_
+    from v2.persistence.models import Security
+
+    query = session.query(Security).filter(Security.market == "US")
+    if filters.active:
+        query = query.filter(Security.active.is_(True))
+    if filters.selectable:
+        query = query.filter(Security.selectable.is_(True), Security.is_test.is_(False))
+    if filters.exchange:
+        query = query.filter(Security.exchange == filters.exchange)
+    if filters.asset_type:
+        query = query.filter(Security.asset_type == filters.asset_type)
+    if filters.search.strip():
+        pattern = f"%{filters.search.strip()}%"
+        query = query.filter(or_(Security.symbol.ilike(pattern), Security.name.ilike(pattern)))
+    return query
+
+
+def _security_dict(row) -> dict:
+    return {
+        "id": row.id, "market": row.market, "symbol": row.symbol,
+        "data_symbol": row.data_symbol, "name": row.name, "exchange": row.exchange,
+        "asset_type": row.asset_type, "currency": row.currency, "active": row.active,
+        "selectable": row.selectable, "catalog_source": row.catalog_source,
+        "synced_at": row.synced_at,
+    }
+
+
+def _security_order(sort_by: str, sort_dir: str):
+    from v2.persistence.models import Security
+
+    columns = {
+        "symbol": Security.symbol,
+        "name": Security.name,
+        "exchange": Security.exchange,
+        "asset_type": Security.asset_type,
+    }
+    column = columns[sort_by]
+    return column.desc() if sort_dir == "desc" else column.asc()
+
+
+@router.post("/securities/sync")
+def securities_sync():
+    from v2.data.cache_service import sync_us_catalog
+    try:
+        return sync_us_catalog(_DB_PATH)
+    except Exception as exc:
+        logger.exception("US security catalog synchronization failed")
+        raise HTTPException(status_code=502, detail=f"catalog synchronization failed: {type(exc).__name__}") from exc
+
+
+@router.get("/securities")
+def securities_list(
+    search: str = Query(default="", max_length=100),
+    exchange: str | None = Query(default=None, max_length=32),
+    asset_type: str | None = Query(default=None, pattern=r"^(equity|etf|other)$"),
+    active: bool = True,
+    selectable: bool = True,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=1000),
+    sort_by: str = Query(default="symbol", pattern=r"^(symbol|name|exchange|asset_type)$"),
+    sort_dir: str = Query(default="asc", pattern=r"^(asc|desc)$"),
+):
+    from sqlalchemy import distinct
+    from v2.persistence.models import Security
+
+    init_db(_DB_PATH)
+    filters = SecurityFilterRequest(search=search, exchange=exchange, asset_type=asset_type, active=active, selectable=selectable)
+    with get_session(_DB_PATH) as session:
+        query = _security_query(session, filters)
+        total = query.count()
+        rows = query.order_by(_security_order(sort_by, sort_dir), Security.symbol).offset((page - 1) * page_size).limit(page_size).all()
+        exchanges = [row[0] for row in session.query(distinct(Security.exchange)).filter(Security.market == "US", Security.active.is_(True)).order_by(Security.exchange).all() if row[0]]
+        return {"items": [_security_dict(row) for row in rows], "total": total, "page": page, "page_size": page_size, "exchanges": exchanges}
+
+
+@router.get("/securities/selection")
+def securities_selection(
+    search: str = Query(default="", max_length=100),
+    exchange: str | None = Query(default=None, max_length=32),
+    asset_type: str | None = Query(default=None, pattern=r"^(equity|etf|other)$"),
+    sort_by: str = Query(default="symbol", pattern=r"^(symbol|name|exchange|asset_type)$"),
+    sort_dir: str = Query(default="asc", pattern=r"^(asc|desc)$"),
+):
+    """Return the complete filtered selection as typed IDs, not a filter token."""
+    from v2.persistence.models import Security
+
+    init_db(_DB_PATH)
+    filters = SecurityFilterRequest(search=search, exchange=exchange, asset_type=asset_type)
+    with get_session(_DB_PATH) as session:
+        rows = _security_query(session, filters).order_by(
+            _security_order(sort_by, sort_dir), Security.symbol,
+        ).all()
+        return {
+            "items": [
+                {
+                    "id": row.id,
+                    "symbol": row.symbol,
+                    "name": row.name,
+                    "exchange": row.exchange,
+                    "asset_type": row.asset_type,
+                }
+                for row in rows
+            ],
+            "total": len(rows),
+        }
+
+
+@router.get("/securities/{security_id}")
+def security_detail(security_id: int):
+    from v2.persistence.models import Security
+    init_db(_DB_PATH)
+    with get_session(_DB_PATH) as session:
+        row = session.get(Security, security_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="security not found")
+        return _security_dict(row)
+
+
+def _universe_dict(session, universe) -> dict:
+    from v2.persistence.models import SavedUniverseMember, Security
+    rows = session.query(SavedUniverseMember, Security).join(Security, Security.id == SavedUniverseMember.security_id).filter(SavedUniverseMember.universe_id == universe.id).order_by(SavedUniverseMember.position).all()
+    return {
+        "id": universe.id, "name": universe.name, "market": universe.market,
+        "archived": universe.archived, "created_at": universe.created_at,
+        "updated_at": universe.updated_at,
+        "securities": [_security_dict(security) for _, security in rows],
+    }
+
+
+@router.get("/universes")
+def universes_list(include_archived: bool = False):
+    from v2.persistence.models import SavedUniverse
+    init_db(_DB_PATH)
+    with get_session(_DB_PATH) as session:
+        query = session.query(SavedUniverse)
+        if not include_archived:
+            query = query.filter(SavedUniverse.archived.is_(False))
+        return {"universes": [_universe_dict(session, row) for row in query.order_by(SavedUniverse.name).all()]}
+
+
+def _replace_universe_members(session, universe_id: int, security_ids: list[int]) -> None:
+    from v2.persistence.models import SavedUniverseMember, Security
+    unique_ids = list(dict.fromkeys(security_ids))
+    found = {
+        row[0]
+        for offset in range(0, len(unique_ids), 500)
+        for row in session.query(Security.id).filter(
+            Security.id.in_(unique_ids[offset:offset + 500]),
+            Security.market == "US",
+            Security.selectable.is_(True),
+        ).all()
+    }
+    if found != set(unique_ids):
+        raise HTTPException(status_code=422, detail="one or more securities are missing or not selectable")
+    session.query(SavedUniverseMember).filter_by(universe_id=universe_id).delete()
+    for position, security_id in enumerate(unique_ids):
+        session.add(SavedUniverseMember(universe_id=universe_id, security_id=security_id, position=position))
+
+
+@router.post("/universes", status_code=201)
+def universe_create(data: UniverseCreateRequest):
+    from v2.persistence.models import SavedUniverse
+    init_db(_DB_PATH)
+    with get_session(_DB_PATH) as session:
+        row = SavedUniverse(name=data.name, market="US")
+        session.add(row)
+        try:
+            session.flush()
+            _replace_universe_members(session, row.id, data.security_ids)
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail="universe name already exists") from exc
+        return _universe_dict(session, row)
+
+
+@router.patch("/universes/{universe_id}")
+def universe_update(universe_id: int, data: UniverseUpdateRequest):
+    from v2.persistence.models import SavedUniverse
+    init_db(_DB_PATH)
+    with get_session(_DB_PATH) as session:
+        row = session.get(SavedUniverse, universe_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="universe not found")
+        if data.name is not None:
+            row.name = data.name.strip()
+        if data.archived is not None:
+            row.archived = data.archived
+        if data.security_ids is not None:
+            _replace_universe_members(session, row.id, data.security_ids)
+        row.updated_at = datetime.now(timezone.utc).isoformat()
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail="universe name already exists") from exc
+        return _universe_dict(session, row)
+
+
+def _resolve_cache_selection(selection: CacheSelectionRequest) -> list[str]:
+    from v2.persistence.models import SavedUniverseMember, Security
+    init_db(_DB_PATH)
+    with get_session(_DB_PATH) as session:
+        if selection.tickers is not None:
+            return selection.tickers
+        if selection.security_ids is not None:
+            rows = [
+                row
+                for offset in range(0, len(selection.security_ids), 500)
+                for row in session.query(Security).filter(
+                    Security.id.in_(selection.security_ids[offset:offset + 500]),
+                    Security.market == "US",
+                    Security.selectable.is_(True),
+                ).all()
+            ]
+            by_id = {row.id: row.symbol for row in rows}
+            if len(by_id) != len(set(selection.security_ids)):
+                raise HTTPException(status_code=422, detail="one or more securities are missing or not selectable")
+            return [by_id[value] for value in selection.security_ids]
+        if selection.universe_id is not None:
+            rows = session.query(Security.symbol).join(SavedUniverseMember, SavedUniverseMember.security_id == Security.id).filter(SavedUniverseMember.universe_id == selection.universe_id).order_by(SavedUniverseMember.position).all()
+            if not rows:
+                raise HTTPException(status_code=422, detail="saved universe is empty or missing")
+            return [row[0] for row in rows]
+        rows = _security_query(session, selection.filter or SecurityFilterRequest()).order_by(Security.symbol).limit(1001).all()
+        if len(rows) > 1000:
+            raise HTTPException(status_code=422, detail="filtered selection exceeds 1000 securities")
+        if not rows:
+            raise HTTPException(status_code=422, detail="filtered selection is empty")
+        return [row.symbol for row in rows]
+
+
+@router.get("/cache/jobs")
+def cache_jobs_list():
+    from v2.data.cache_jobs import get_cache_job_manager
+    return {"jobs": get_cache_job_manager(_DB_PATH).list()}
+
+
+@router.post("/cache/jobs", status_code=202)
+def cache_job_create(data: CacheJobCreateRequest):
+    from v2.data.cache_jobs import get_cache_job_manager
+    tickers = _resolve_cache_selection(data.selection)
+    return get_cache_job_manager(_DB_PATH).create(
+        tickers, data.benchmark, data.start_date.isoformat(), data.end_date.isoformat(), data.data_types, data.force,
+    )
+
+
+@router.get("/cache/jobs/{job_id}")
+def cache_job_detail(job_id: str):
+    from v2.data.cache_jobs import get_cache_job_manager
+    result = get_cache_job_manager(_DB_PATH).get(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="cache job not found")
+    return result
+
+
+@router.post("/cache/jobs/{job_id}/cancel")
+def cache_job_cancel(job_id: str):
+    from v2.data.cache_jobs import get_cache_job_manager
+    result = get_cache_job_manager(_DB_PATH).cancel(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="cache job not found")
+    return result
+
+
+@router.post("/cache/jobs/{job_id}/retry", status_code=202)
+def cache_job_retry(job_id: str):
+    from v2.data.cache_jobs import get_cache_job_manager
+    result = get_cache_job_manager(_DB_PATH).retry(job_id)
+    if result is None:
+        raise HTTPException(status_code=409, detail="cache job has no failed items to retry")
+    return result
+
+
 @router.post("/cache/fetch")
 def cache_fetch(data: CacheFetchRequest):
     """Fetch and cache historical prices + financial metrics from yfinance.
 
     Body: {"tickers": ["AAPL"], "start_date": "2024-01-01", "end_date": "2024-12-31"}
     """
-    tickers, benchmark = data.tickers, data.benchmark
+    # Compatibility endpoint: new UI uses background jobs, while older clients
+    # retain the original response shape through the same normalized cache service.
+    from v2.data.cache_service import fetch_security_data
+    from v2.data.market import USMarketDataAdapter
+    from v2.data import yfinance_client as yahoo_module
+
     start_date, end_date = data.start_date.isoformat(), data.end_date.isoformat()
-
-    from v2.data.yfinance_client import YFinanceClient
-    from v2.data.earnings import (
-        earnings_surprise_percent,
-        has_actionable_surprise,
-    )
-    from v2.persistence.models import EarningsCache, MetricsCache, PriceCache
-
-    client = YFinanceClient()
-    init_db(_DB_PATH)
-    results = {}
-
-    def fetch_prices(ticker, session):
-        prices = client.get_prices(ticker, start_date, end_date)
-        for price in prices:
-            date_str = price.time[:10] if price.time and len(price.time) >= 10 else ""
-            if not date_str:
-                continue
-            existing = session.query(PriceCache).filter(
-                PriceCache.ticker == ticker, PriceCache.date == date_str
-            ).first()
-            if existing:
-                existing.open = price.open
-                existing.high = price.high
-                existing.low = price.low
-                existing.close = price.close
-                existing.volume = price.volume
-            else:
-                session.add(PriceCache(
-                    ticker=ticker, date=date_str,
-                    open=price.open, high=price.high, low=price.low,
-                    close=price.close, volume=price.volume,
-                ))
-        session.commit()
-        return len(prices)
-
-    try:
-        for ticker in tickers:
-            t = ticker.upper().strip()
-            if not t:
-                continue
-            ticker_results = {"prices": 0, "metrics": 0, "earnings": 0, "error": None, "warnings": []}
-            session = get_session(_DB_PATH)
-
-            try:
-                ticker_results["prices"] = fetch_prices(t, session)
-                if not ticker_results["prices"]:
-                    ticker_results["error"] = "prices: Yahoo returned no data"
-            except Exception as e:
-                session.rollback()
-                ticker_results["error"] = f"prices: {e}"
-
-            try:
-                metrics = client.get_financial_metrics(t, end_date, limit=40)
-                for m in metrics:
-                    existing = session.query(MetricsCache).filter(
-                        MetricsCache.ticker == t, MetricsCache.report_period == m.report_period
-                    ).first()
-                    # Current valuation fields from stock.info are not historical.
-                    # Never persist them as if they were known in a past quarter.
-                    m_json = m.model_dump_json(exclude={
-                        "ticker", "market_cap", "enterprise_value",
-                        "price_to_earnings_ratio", "price_to_book_ratio",
-                        "price_to_sales_ratio", "enterprise_value_to_ebitda_ratio",
-                        "enterprise_value_to_revenue_ratio", "peg_ratio",
-                    })
-                    # TODO(event-driven-persona): yfinance quarterly statements expose
-                    # report periods here, not authoritative public filing timestamps.
-                    # Replace this +45-day estimate with source-aware SEC/filing dates
-                    # before treating it as the exact availability date of new metrics.
-                    if existing:
-                        existing.data = m_json
-                        existing.filing_date = (date.fromisoformat(m.report_period) + timedelta(days=45)).isoformat()
-                        existing.filing_date_source = "estimated_45d"
-                    else:
-                        session.add(MetricsCache(
-                            ticker=t,
-                            report_period=m.report_period,
-                            filing_date=(date.fromisoformat(m.report_period) + timedelta(days=45)).isoformat(),
-                            filing_date_source="estimated_45d",
-                            data=m_json,
-                        ))
-                session.commit()
-                ticker_results["metrics"] = len(metrics)
-            except Exception as e:
-                session.rollback()
-                if ticker_results["error"]:
-                    ticker_results["error"] += f"; metrics: {e}"
-                else:
-                    ticker_results["error"] = f"metrics: {e}"
-
-            try:
-                earnings = client.get_earnings_history(t, limit=40)
-                if not earnings:
-                    ticker_results["warnings"].append(
-                        "Yahoo returned no earnings history; PEAD will remain neutral"
-                    )
-                elif not has_actionable_surprise(earnings):
-                    ticker_results["warnings"].append(
-                        "Yahoo returned no complete actual/estimate EPS surprise; PEAD will remain neutral"
-                    )
-                for e in earnings:
-                    q = e.quarterly
-                    actual = q.earnings_per_share if q else None
-                    estimated = q.estimated_earnings_per_share if q else None
-                    surprise = earnings_surprise_percent(e)
-                    existing = session.query(EarningsCache).filter_by(ticker=t, announcement_date=e.filing_date).first()
-                    values = dict(
-                        report_period=e.report_period,
-                        actual_eps=actual,
-                        estimated_eps=estimated,
-                        surprise_pct=surprise,
-                        source="yahoo",
-                    )
-                    if existing:
-                        for key, value in values.items(): setattr(existing, key, value)
-                    elif e.filing_date:
-                        session.add(EarningsCache(ticker=t, announcement_date=e.filing_date, **values))
-                ticker_results["earnings"] = len(earnings)
-                session.commit()
-            except Exception as e:
-                session.rollback()
-                ticker_results["error"] = (ticker_results["error"] + "; " if ticker_results["error"] else "") + f"earnings: {e}"
-            finally:
-                session.close()
-
-            results[t] = ticker_results
-
-        benchmark_result = None
-        if benchmark not in tickers:
-            session = get_session(_DB_PATH)
-            try:
-                try:
-                    count = fetch_prices(benchmark, session)
-                    benchmark_result = {
-                        "ticker": benchmark,
-                        "prices": count,
-                        "error": None if count else "prices: Yahoo returned no data",
-                    }
-                except Exception as exc:
-                    session.rollback()
-                    benchmark_result = {
-                        "ticker": benchmark, "prices": 0,
-                        "error": f"prices: {exc}",
-                    }
-            finally:
-                session.close()
-
-        return {"results": results, "benchmark": benchmark_result}
-    finally:
-        client.close()
+    adapter = USMarketDataAdapter(client=yahoo_module.YFinanceClient())
+    results: dict[str, dict] = {}
+    for ticker in data.tickers:
+        detail = fetch_security_data(
+            _DB_PATH, ticker, start_date, end_date,
+            ["prices", "metrics", "earnings"], force=True, adapter=adapter,
+        )
+        failures = [
+            f"{kind}: {value.get('error')}"
+            for kind in ("prices", "metrics", "earnings")
+            if (value := detail.get(kind)) and value.get("status") in {"failed", "no_data"} and value.get("error")
+        ]
+        results[ticker] = {
+            "prices": (detail.get("prices") or {}).get("count", 0),
+            "metrics": (detail.get("metrics") or {}).get("count", 0),
+            "earnings": (detail.get("earnings") or {}).get("count", 0),
+            "error": "; ".join(failures) or None,
+            "warnings": detail.get("warnings", []),
+        }
+    benchmark_result = None
+    if data.benchmark not in data.tickers:
+        detail = fetch_security_data(
+            _DB_PATH, data.benchmark, start_date, end_date,
+            ["prices"], force=True, adapter=adapter,
+        )
+        price = detail.get("prices") or {}
+        benchmark_result = {
+            "ticker": data.benchmark, "prices": price.get("count", 0),
+            "error": price.get("error"),
+        }
+    adapter.client.close()
+    return {"results": results, "benchmark": benchmark_result}
 
 
 @router.get("/cache/list")
 def cache_list():
     """List all cached tickers with data ranges."""
     from sqlalchemy import func
-    from v2.persistence.models import EarningsCache, MetricsCache, PriceCache
+    from v2.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache
 
     init_db(_DB_PATH)
     session = get_session(_DB_PATH)
@@ -440,6 +678,7 @@ def cache_list():
                 func.min(PriceCache.date).label("min_date"),
                 func.max(PriceCache.date).label("max_date"),
                 func.count().label("cnt"),
+                func.group_concat(func.distinct(PriceCache.price_mode)).label("price_modes"),
             )
             .group_by(PriceCache.ticker)
             .all()
@@ -456,10 +695,17 @@ def cache_list():
             .all()
         )
         earnings_rows = session.query(EarningsCache.ticker, func.min(EarningsCache.announcement_date), func.max(EarningsCache.announcement_date), func.count()).group_by(EarningsCache.ticker).all()
+        coverage_rows = session.query(CacheCoverage).filter(CacheCoverage.data_kind == "prices").order_by(CacheCoverage.fetched_at).all()
 
-        price_map = {r.ticker: {"min": r.min_date, "max": r.max_date, "count": r.cnt} for r in price_rows}
+        price_map = {r.ticker: {"min": r.min_date, "max": r.max_date, "count": r.cnt, "price_modes": (r.price_modes or "legacy_unknown").split(",")} for r in price_rows}
         metrics_map = {r.ticker: {"min": r.min_period, "max": r.max_period, "count": r.cnt} for r in metrics_rows}
         earnings_map = {r[0]: {"min": r[1], "max": r[2], "count": r[3]} for r in earnings_rows}
+        coverage_map = {r.ticker: {
+            "status": r.status, "requested_start": r.requested_start,
+            "requested_end": r.requested_end, "actual_start": r.actual_start,
+            "actual_end": r.actual_end, "missing_sessions": r.missing_sessions,
+            "fetched_at": r.fetched_at,
+        } for r in coverage_rows}
 
         all_tickers = set(price_map) | set(metrics_map) | set(earnings_map)
         result = {}
@@ -468,6 +714,7 @@ def cache_list():
                 "prices": price_map.get(t),
                 "metrics": metrics_map.get(t),
                 "earnings": earnings_map.get(t),
+                "coverage": coverage_map.get(t),
                 "filing_date_note": "quarterly metrics use estimated report_period + 45 days",
             }
         return {"cached": result}
@@ -475,10 +722,181 @@ def cache_list():
         session.close()
 
 
+@router.get("/cache/securities")
+def cached_securities_list(
+    search: str = Query(default="", max_length=100),
+    status: str | None = Query(default=None, max_length=20),
+    price_mode: str | None = Query(default=None, pattern=r"^(raw|legacy_unknown)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    sort_by: str = Query(
+        default="symbol",
+        pattern=r"^(symbol|name|exchange|actual_start|actual_end|rows|latest_close|latest_volume|updated_at)$",
+    ),
+    sort_dir: str = Query(default="asc", pattern=r"^(asc|desc)$"),
+):
+    """Paginated cache inventory used by the cache explorer table."""
+    from sqlalchemy import and_, func
+    from v2.persistence.models import PriceCache, Security
+
+    cached = cache_list()["cached"]
+    tickers = list(cached)
+    init_db(_DB_PATH)
+    with get_session(_DB_PATH) as session:
+        securities = {
+            row.symbol: row
+            for offset in range(0, len(tickers), 500)
+            for row in session.query(Security).filter(
+                Security.market == "US",
+                Security.symbol.in_(tickers[offset:offset + 500]),
+            ).all()
+        }
+        latest_dates = session.query(
+            PriceCache.ticker.label("ticker"),
+            func.max(PriceCache.date).label("latest_date"),
+        ).group_by(PriceCache.ticker).subquery()
+        latest_rows = session.query(PriceCache).join(
+            latest_dates,
+            and_(
+                PriceCache.ticker == latest_dates.c.ticker,
+                PriceCache.date == latest_dates.c.latest_date,
+            ),
+        ).all()
+        latest = {row.ticker: row for row in latest_rows}
+
+    rows = []
+    needle = search.strip().lower()
+    for ticker, item in cached.items():
+        security = securities.get(ticker)
+        coverage = item.get("coverage") or {}
+        modes = (item.get("prices") or {}).get("price_modes") or []
+        name = security.name if security else ""
+        if needle and needle not in ticker.lower() and needle not in name.lower():
+            continue
+        if status and coverage.get("status") != status:
+            continue
+        if price_mode and price_mode not in modes:
+            continue
+        last = latest.get(ticker)
+        rows.append({
+            "ticker": ticker,
+            "name": name,
+            "exchange": security.exchange if security else "",
+            "asset_type": security.asset_type if security else "",
+            **item,
+            "latest_close": last.close if last else None,
+            "latest_adjusted_close": last.adjusted_close if last else None,
+            "latest_volume": last.volume if last else None,
+            "latest_date": last.date if last else None,
+        })
+
+    def sort_value(row):
+        coverage = row.get("coverage") or {}
+        prices = row.get("prices") or {}
+        values = {
+            "symbol": row["ticker"],
+            "name": row.get("name") or "",
+            "exchange": row.get("exchange") or "",
+            "actual_start": coverage.get("actual_start") or "",
+            "actual_end": coverage.get("actual_end") or "",
+            "rows": prices.get("count") or 0,
+            "latest_close": row.get("latest_close") or 0,
+            "latest_volume": row.get("latest_volume") or 0,
+            "updated_at": coverage.get("fetched_at") or "",
+        }
+        return values[sort_by]
+
+    rows.sort(key=lambda row: (sort_value(row), row["ticker"]), reverse=sort_dir == "desc")
+    total = len(rows)
+    start = (page - 1) * page_size
+    return {
+        "items": rows[start:start + page_size],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.get("/cache/securities/{ticker}")
+def cached_security_detail(
+    ticker: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+):
+    """Return all effective cached data for one security and optional date range."""
+    from v2.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache, Security
+
+    symbol = CacheFetchRequest.valid_benchmark(ticker)
+    init_db(_DB_PATH)
+    with get_session(_DB_PATH) as session:
+        price_query = session.query(PriceCache).filter(PriceCache.ticker == symbol)
+        if start_date:
+            price_query = price_query.filter(PriceCache.date >= start_date.isoformat())
+        if end_date:
+            price_query = price_query.filter(PriceCache.date <= end_date.isoformat())
+        prices = price_query.order_by(PriceCache.date).all()
+        metrics = session.query(MetricsCache).filter_by(ticker=symbol).order_by(MetricsCache.report_period.desc()).all()
+        earnings = session.query(EarningsCache).filter_by(ticker=symbol).order_by(EarningsCache.announcement_date.desc()).all()
+        coverage = session.query(CacheCoverage).filter_by(ticker=symbol).order_by(CacheCoverage.fetched_at.desc()).all()
+        security = session.query(Security).filter_by(market="US", symbol=symbol).one_or_none()
+        if not prices and not metrics and not earnings:
+            raise HTTPException(status_code=404, detail="cached security not found")
+        return {
+            "ticker": symbol,
+            "security": _security_dict(security) if security else None,
+            "prices": [
+                {
+                    "date": row.date, "open": row.open, "high": row.high,
+                    "low": row.low, "close": row.close,
+                    "adjusted_close": row.adjusted_close, "volume": row.volume,
+                    "dividend": row.dividend, "split_ratio": row.split_ratio,
+                    "source": row.source, "price_mode": row.price_mode,
+                }
+                for row in prices
+            ],
+            "metrics": [
+                {
+                    "report_period": row.report_period,
+                    "filing_date": row.filing_date,
+                    "filing_date_source": row.filing_date_source,
+                    "data": json.loads(row.data),
+                }
+                for row in metrics
+            ],
+            "earnings": [
+                {
+                    "report_period": row.report_period,
+                    "announcement_date": row.announcement_date,
+                    "actual_eps": row.actual_eps,
+                    "estimated_eps": row.estimated_eps,
+                    "surprise_pct": row.surprise_pct,
+                    "source": row.source,
+                }
+                for row in earnings
+            ],
+            "coverage_history": [
+                {
+                    "data_kind": row.data_kind,
+                    "requested_start": row.requested_start,
+                    "requested_end": row.requested_end,
+                    "actual_start": row.actual_start,
+                    "actual_end": row.actual_end,
+                    "row_count": row.row_count,
+                    "missing_sessions": row.missing_sessions,
+                    "status": row.status,
+                    "error_category": row.error_category,
+                    "error_message": row.error_message,
+                    "fetched_at": row.fetched_at,
+                }
+                for row in coverage
+            ],
+        }
+
+
 @router.delete("/cache/{ticker}")
 def cache_delete(ticker: str):
     """Delete all cached data for a ticker."""
-    from v2.persistence.models import EarningsCache, MetricsCache, PriceCache
+    from v2.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache
 
     t = ticker.upper().strip()
     init_db(_DB_PATH)
@@ -487,12 +905,14 @@ def cache_delete(ticker: str):
         pc = session.query(PriceCache).filter(PriceCache.ticker == t).delete()
         mc = session.query(MetricsCache).filter(MetricsCache.ticker == t).delete()
         ec = session.query(EarningsCache).filter(EarningsCache.ticker == t).delete()
+        cc = session.query(CacheCoverage).filter(CacheCoverage.ticker == t).delete()
         session.commit()
         return {
             "ticker": t,
             "deleted_prices": pc,
             "deleted_metrics": mc,
             "deleted_earnings": ec,
+            "deleted_coverage": cc,
         }
     finally:
         session.close()

@@ -27,6 +27,11 @@ class Price(BaseModel):
     low: float
     volume: int
     time: str
+    adjusted_close: float | None = None
+    dividend: float = 0.0
+    split_ratio: float = 0.0
+    source: str = "unknown"
+    price_mode: str = "legacy_unknown"
 
 
 # ---------------------------------------------------------------------------

@@ -6,8 +6,14 @@ async function requireOk(res: Response): Promise<void> {
   if (res.ok) return;
   const body = await res.json().catch(() => ({}));
   const detail = body.detail;
+  const validationMessage = Array.isArray(detail)
+    ? detail.map(item => {
+      const location = Array.isArray(item?.loc) ? item.loc.filter((part: unknown) => part !== 'body').join('.') : '';
+      return `${location ? `${location}: ` : ''}${item?.msg || 'invalid value'}`;
+    }).join('; ')
+    : null;
   const error = new Error(
-    typeof detail === 'string' ? detail : detail?.message || `Request failed (${res.status})`
+    typeof detail === 'string' ? detail : validationMessage || detail?.message || `Request failed (${res.status})`
   ) as ApiError;
   error.status = res.status;
   error.detail = detail;
@@ -15,14 +21,125 @@ async function requireOk(res: Response): Promise<void> {
 }
 
 export interface CacheItem {
-  prices: { min: string; max: string; count: number } | null;
+  prices: { min: string; max: string; count: number; price_modes?: string[] } | null;
   metrics: { min: string; max: string; count: number } | null;
   earnings: { min: string; max: string; count: number } | null;
+  coverage?: { status: string; requested_start: string; requested_end: string; actual_start: string | null; actual_end: string | null; missing_sessions: number; fetched_at: string } | null;
   filing_date_note?: string;
+}
+
+export interface SecurityItem {
+  id: number;
+  market: 'US';
+  symbol: string;
+  data_symbol: string;
+  name: string;
+  exchange: string;
+  asset_type: 'equity' | 'etf' | 'other';
+  currency: 'USD';
+  active: boolean;
+  selectable: boolean;
+  catalog_source: string;
+  synced_at: string;
+}
+
+export interface SecurityListResponse {
+  items: SecurityItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  exchanges: string[];
+}
+
+export type SecuritySelectionItem = Pick<SecurityItem, 'id' | 'symbol' | 'name' | 'exchange' | 'asset_type'>;
+
+export interface SecuritySelectionResponse {
+  items: SecuritySelectionItem[];
+  total: number;
+}
+
+export interface SavedUniverse {
+  id: number;
+  name: string;
+  market: 'US';
+  archived: boolean;
+  securities: SecurityItem[];
+}
+
+export interface CacheJobItemResult {
+  status: 'complete' | 'partial' | 'no_data' | 'failed' | 'skipped';
+  count?: number;
+  actual_start?: string | null;
+  actual_end?: string | null;
+  missing_sessions?: number;
+  price_mode?: string;
+  error_category?: string;
+  error?: string;
+  reason?: string;
+}
+
+export interface CacheJob {
+  id: string;
+  status: 'pending' | 'running' | 'cancelling' | 'completed' | 'partial' | 'failed' | 'cancelled';
+  tickers: string[];
+  benchmark: string;
+  start_date: string;
+  end_date: string;
+  data_types: string[];
+  progress: { total: number; completed: number; failed: number; cancelled: number };
+  items: Record<string, {
+    ticker: string;
+    prices?: CacheJobItemResult | null;
+    metrics?: CacheJobItemResult | null;
+    earnings?: CacheJobItemResult | null;
+    warnings?: string[];
+  }>;
 }
 
 export interface CacheListResponse {
   cached: Record<string, CacheItem>;
+}
+
+export interface CachedSecurityItem extends CacheItem {
+  ticker: string;
+  name: string;
+  exchange: string;
+  asset_type: string;
+  latest_close: number | null;
+  latest_adjusted_close: number | null;
+  latest_volume: number | null;
+  latest_date: string | null;
+}
+
+export interface CachedSecurityListResponse {
+  items: CachedSecurityItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface CachedSecurityDetail {
+  ticker: string;
+  security: SecurityItem | null;
+  prices: Array<{
+    date: string; open: number; high: number; low: number; close: number;
+    adjusted_close: number | null; volume: number; dividend: number;
+    split_ratio: number; source: string; price_mode: string;
+  }>;
+  metrics: Array<{
+    report_period: string; filing_date: string; filing_date_source: string;
+    data: Record<string, unknown>;
+  }>;
+  earnings: Array<{
+    report_period: string; announcement_date: string; actual_eps: number | null;
+    estimated_eps: number | null; surprise_pct: number | null; source: string;
+  }>;
+  coverage_history: Array<{
+    data_kind: string; requested_start: string; requested_end: string;
+    actual_start: string | null; actual_end: string | null; row_count: number;
+    missing_sessions: number; status: string; error_category: string | null;
+    error_message: string | null; fetched_at: string;
+  }>;
 }
 
 export interface FetchCacheRequest {
@@ -220,6 +337,14 @@ export interface CycleRecordAudit {
     weights: Record<string, number>;
   }[];
   persona_events?: PersonaEventAudit[];
+  corporate_actions?: {
+    ticker: string;
+    action_type: 'split' | 'dividend';
+    value: number;
+    shares_before: number;
+    shares_after: number;
+    cash_amount: number;
+  }[];
   target_weights: Record<string, number>;
   clamps: { limit: string; ticker: string | null; before: number; after: number }[];
   final_weights: Record<string, number>;
@@ -288,6 +413,92 @@ export interface SimRunSummary {
 }
 
 export const simulationApi = {
+  async syncSecurities(): Promise<{ total: number; created: number; updated: number; deactivated: number }> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/securities/sync`, { method: 'POST' });
+    await requireOk(res);
+    return res.json();
+  },
+
+  async listSecurities(params: { search?: string; exchange?: string; asset_type?: string; page?: number; page_size?: number; sort_by?: string; sort_dir?: string } = {}): Promise<SecurityListResponse> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)); });
+    const res = await fetch(`${API_BASE_URL}/dashboard/securities?${query}`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async listSecuritySelection(params: { search?: string; exchange?: string; asset_type?: string; sort_by?: string; sort_dir?: string } = {}): Promise<SecuritySelectionResponse> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)); });
+    const res = await fetch(`${API_BASE_URL}/dashboard/securities/selection?${query}`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async listUniverses(): Promise<{ universes: SavedUniverse[] }> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/universes`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async createUniverse(name: string, securityIds: number[]): Promise<SavedUniverse> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/universes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, security_ids: securityIds }),
+    });
+    await requireOk(res);
+    return res.json();
+  },
+
+  async createCacheJob(req: {
+    selection: { security_ids: number[] } | { universe_id: number } | { filter: Record<string, unknown> } | { tickers: string[] };
+    benchmark: string; start_date: string; end_date: string;
+    data_types: string[]; force?: boolean;
+  }): Promise<CacheJob> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/cache/jobs`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req),
+    });
+    await requireOk(res);
+    return res.json();
+  },
+
+  async getCacheJob(id: string): Promise<CacheJob> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/cache/jobs/${id}`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async cancelCacheJob(id: string): Promise<CacheJob> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/cache/jobs/${id}/cancel`, { method: 'POST' });
+    await requireOk(res);
+    return res.json();
+  },
+
+  async retryCacheJob(id: string): Promise<CacheJob> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/cache/jobs/${id}/retry`, { method: 'POST' });
+    await requireOk(res);
+    return res.json();
+  },
+
+  async listCachedSecurities(params: {
+    search?: string; status?: string; price_mode?: string; page?: number;
+    page_size?: number; sort_by?: string; sort_dir?: string;
+  } = {}): Promise<CachedSecurityListResponse> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)); });
+    const res = await fetch(`${API_BASE_URL}/dashboard/cache/securities?${query}`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async getCachedSecurity(ticker: string, params: { start_date?: string; end_date?: string } = {}): Promise<CachedSecurityDetail> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => { if (value) query.set(key, value); });
+    const suffix = query.size ? `?${query}` : '';
+    const res = await fetch(`${API_BASE_URL}/dashboard/cache/securities/${encodeURIComponent(ticker)}${suffix}`);
+    await requireOk(res);
+    return res.json();
+  },
   async listLlmModels(): Promise<{ providers: LlmProviderOption[] }> {
     const res = await fetch(`${API_BASE_URL}/dashboard/llm/models`);
     await requireOk(res);

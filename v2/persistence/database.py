@@ -64,6 +64,14 @@ def _migrate(engine) -> None:
         "earnings_cache": {
             "source": "VARCHAR(32) NOT NULL DEFAULT 'yahoo'",
         },
+        "price_cache": {
+            "adjusted_close": "FLOAT",
+            "dividend": "FLOAT NOT NULL DEFAULT 0",
+            "split_ratio": "FLOAT NOT NULL DEFAULT 0",
+            "source": "VARCHAR(32) NOT NULL DEFAULT 'legacy'",
+            "price_mode": "VARCHAR(24) NOT NULL DEFAULT 'legacy_unknown'",
+            "updated_at": "VARCHAR(26)",
+        },
         "sim_cycle_ticker_index": {
             "refresh_failed_count": "INTEGER NOT NULL DEFAULT 0",
         },

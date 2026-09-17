@@ -35,6 +35,35 @@ class SimBroker:
     def cash(self) -> float:
         return self._cash
 
+    def apply_split(self, ticker: str, ratio: float, cash_in_lieu_price: float) -> dict | None:
+        """Apply an effective-date split before orders, retaining integer shares."""
+        before = self._shares.get(ticker, 0)
+        if before == 0 or ratio <= 0 or ratio == 1:
+            return None
+        exact = before * ratio
+        after = int(exact)  # truncates toward zero for long and short books
+        cash_amount = (exact - after) * cash_in_lieu_price
+        self._shares[ticker] = after
+        self._cash += cash_amount
+        if after == 0:
+            self._shares.pop(ticker, None)
+        return {
+            "ticker": ticker, "action_type": "split", "value": ratio,
+            "shares_before": before, "shares_after": after, "cash_amount": cash_amount,
+        }
+
+    def apply_dividend(self, ticker: str, amount_per_share: float) -> dict | None:
+        """Credit long holders and debit short holders before effective-date orders."""
+        shares = self._shares.get(ticker, 0)
+        if shares == 0 or amount_per_share == 0:
+            return None
+        cash_amount = shares * amount_per_share
+        self._cash += cash_amount
+        return {
+            "ticker": ticker, "action_type": "dividend", "value": amount_per_share,
+            "shares_before": shares, "shares_after": shares, "cash_amount": cash_amount,
+        }
+
     def place_order(self, order: Order, cycle_date: str | None = None) -> Fill:
         if order.price <= 0:
             raise ValueError(

@@ -59,6 +59,15 @@ class PersonaEventRecord(BaseModel):
     effective_signal: Signal | None = None
 
 
+class CorporateActionRecord(BaseModel):
+    ticker: str
+    action_type: Literal["split", "dividend"]
+    value: float
+    shares_before: int
+    shares_after: int
+    cash_amount: float
+
+
 class CycleRecord(BaseModel):
     """One tick of the fund, fully serialized — every stage's inputs and
     outputs. `model_dump_json()` round-trips; nothing about a decision
@@ -75,6 +84,7 @@ class CycleRecord(BaseModel):
     skipped: list[TickerSkip]
     strategies: list[StrategyRecord]    # every sleeve, incl. each thesis
     persona_events: list[PersonaEventRecord] = Field(default_factory=list)
+    corporate_actions: list[CorporateActionRecord] = Field(default_factory=list)
     target_weights: dict[str, float]    # the NETTED book, pre-risk
     clamps: list[ClampEvent]
     final_weights: dict[str, float]     # post-risk
