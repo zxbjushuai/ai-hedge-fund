@@ -6,7 +6,7 @@
 - [x] Extract standalone Web entrypoint, route modules and UI shell by reusing code.
 - [x] Verify empty startup twice, cwd-independent paths, deterministic NAV/fills and old/new API parity.
 - [x] Verify original data using disposable copies of consistent backups (8 read endpoints).
-- [x] Full offline suite: 253 passed; new frontend build and zero-warning ESLint pass.
+- [x] Final full offline suite: 296 passed; clean-install frontend build and zero-warning ESLint pass.
 - [x] Complete interactive browser / real Ctrl+C acceptance (user confirmed) and expanded event/action golden fixture.
 - [x] Add integrated event/action observational fixture and counterexample for split sizing.
 - [x] Resolve baseline split-sizing acceptance failure (negative cash in unlevered fixture), authorized by user.
@@ -15,5 +15,5 @@
 - [x] Obtain exact deletion approval and permission for required Git checkpoints.
 - [x] Merge fc1bf25 and migrate the core package to hedge_fund.
 - [x] Verify both upstream and custom semantics (offline suite, CLI receipts, TUI home, Web backup-copy browser smoke).
-- [ ] Remove approved obsolete code and dependencies; preserve DB tables.
+- [x] Remove approved obsolete code and dependencies; preserve DB tables and OpenSpec history.
 - [ ] Complete stage 4 acceptance and handoff; integrate only when authorized.

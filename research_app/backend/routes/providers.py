@@ -265,9 +265,8 @@ def llm_options(db: Session = Depends(get_db)):
     return {"providers": options}
 
 
-@router.get("/llm/models")
 async def llm_models():
-    """List v2-supported models and credential availability, never secrets."""
+    """Legacy internal helper; no longer registered as a public Web route."""
     from research_app.backend.database.connection import SessionLocal
     from research_app.backend.services.v2_llm_service import credential_configured
     from hedge_fund.llm import catalog

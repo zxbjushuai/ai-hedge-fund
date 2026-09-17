@@ -30,12 +30,29 @@ for _ in range(2):
             assert response.status_code == 200, (path, response.text)
         assert client.get('/flows').status_code == 404
         assert client.get('/dashboard/status').status_code == 404
+        for removed in ['/dashboard/llm/models', '/api-keys', '/storage', '/hedge-fund', '/flow-runs']:
+            assert client.get(removed).status_code == 404
+        paths = client.get('/openapi.json').json()['paths']
+        allowed = ('/dashboard/sim/', '/dashboard/cache/', '/dashboard/securities',
+                   '/dashboard/universes', '/dashboard/llm/providers', '/dashboard/llm/options')
+        assert all(path == '/health' or path.startswith(allowed) for path in paths)
 assert not any(name.startswith('app.backend') for name in sys.modules)
 assert 'hedge_fund.run_daemon' not in sys.modules
 '''
     result = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
                             env=env, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+def test_preserved_alembic_history_initializes_and_upgrades_twice(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ, PYTHONPATH=str(root), LLM_DB_PATH=str(tmp_path / 'llm.db'))
+    command = [sys.executable, '-m', 'alembic', '-c',
+               str(root / 'research_app/backend/alembic.ini'), 'upgrade', 'head']
+    for _ in range(2):
+        result = subprocess.run(command, cwd=root, env=env, capture_output=True,
+                                text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
 
 
 def test_paths_do_not_depend_on_cwd(tmp_path, monkeypatch):

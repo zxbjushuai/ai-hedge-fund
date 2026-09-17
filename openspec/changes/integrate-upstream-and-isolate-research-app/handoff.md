@@ -2,6 +2,38 @@
 
 ## Status
 
+### Current delivery: stages 1–3 complete
+
+- Authorized stage 1 checkpoint: `5b714d2`.
+- Real merge: `5d1c480`, with upstream `fc1bf25` as a parent. No unmerged paths.
+- One core namespace: `hedge_fund`; standalone Web: `research_app`.
+- Stage 3 removed Flow/editor dependencies from frontend declarations/lock and
+  unregistered the legacy static `/dashboard/llm/models` route. Existing helper
+  code is retained internally for compatibility; it is not a public route.
+- Preserved all OpenSpec history documents. Missing historical docs from the
+  broad upstream-deletion comparison were restored from the checkpoint during
+  final cleanup review; no history or acceptance evidence is intentionally lost.
+- Fixed a duplicate index declaration in the preserved Alembic revision chain,
+  without changing revision IDs; empty database upgrade twice passes.
+- Final full suite: **296 passed, 39 live tests deselected, 71 dependency warnings**.
+- Fresh temporary frontend directory: npm ci, build and zero-warning lint pass.
+  No old Flow JS module is imported. Old unused local node_modules are not deleted.
+- Chrome DevTools, on disposable database copies: three tabs render; sim8 result
+  and Decision Audit load; connections/models/key masks display; cache search for
+  AAPL and its historical detail open. No live model/data requests were made.
+- Existing font-asset/Browserslist build warnings remain cosmetic and documented;
+  visual redesign is not included. The missing favicon request is avoided.
+- Existing DB filenames, legacy tables/IDs and API Key import history are retained.
+  The application does not depend on old `app/` source even though its default
+  LLM database file is still `app/backend/hedge_fund.db`.
+
+### Remaining stage 4 gates
+
+Operation/merge documentation is updated, but no paid live simulation has been
+started. User must choose the connection/model and small run for that acceptance.
+Development-branch integration and remote push are not authorized and not done.
+All prior status notes below are historical, superseded by this section.
+
 Current gate: user confirmed manual acceptance on 2026-09-17. Stage 0/1 acceptance
 is complete, including the corrected split-sizing regression. The pending/manual
 statements below are historical investigation notes. Stage 2 has not started;

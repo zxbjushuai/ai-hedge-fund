@@ -41,7 +41,9 @@ def upgrade():
         op.create_table(
             'hedge_fund_flow_run_cycles',
             sa.Column('id', sa.Integer, primary_key=True, index=True),
-            sa.Column('flow_run_id', sa.Integer, nullable=False, index=True),
+            # Explicit index below; index=True would create the same name twice
+            # when replaying the preserved migration chain on an empty SQLite DB.
+            sa.Column('flow_run_id', sa.Integer, nullable=False),
             sa.Column('cycle_number', sa.Integer, nullable=False),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
             sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),

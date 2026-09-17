@@ -502,14 +502,14 @@ class OllamaService:
     def _format_models_for_api(self, downloaded_models: List[str]) -> List[Dict[str, str]]:
         """Format downloaded models for API response."""
         # Import OLLAMA_MODELS here to avoid circular imports
-        from src.llm.models import OLLAMA_MODELS
+        from hedge_fund.llm.registry import models_for
         
         api_models = []
-        for ollama_model in OLLAMA_MODELS:
-            if ollama_model.model_name in downloaded_models:
+        for ollama_model in models_for("ollama"):
+            if ollama_model.model in downloaded_models:
                 api_models.append({
                     "display_name": ollama_model.display_name,
-                    "model_name": ollama_model.model_name,
+                    "model_name": ollama_model.model,
                     "provider": "Ollama"
                 })
         
