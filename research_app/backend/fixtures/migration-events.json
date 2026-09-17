@@ -1,0 +1,17 @@
+{
+  "calls": 2,
+  "nav": [1000.0, 1000.0, 1040.0, 1040.0],
+  "fills": [
+    {"date": "2024-01-09", "side": "BUY", "quantity": 100, "price": 10.0},
+    {"date": "2024-01-10", "side": "BUY", "quantity": 8, "price": 5.0}
+  ],
+  "events": [
+    [{"provenance": "refreshed", "reasons": ["bootstrap"]}],
+    [{"provenance": "reused", "reasons": []}],
+    [{"provenance": "refreshed", "reasons": ["valuation_change"]}]
+  ],
+  "actions": [[], [
+    {"ticker": "AAA", "action_type": "split", "value": 2.0, "shares_before": 100, "shares_after": 200, "cash_amount": 0.0},
+    {"ticker": "AAA", "action_type": "dividend", "value": 0.2, "shares_before": 200, "shares_after": 200, "cash_amount": 40.0}
+  ], []]
+}

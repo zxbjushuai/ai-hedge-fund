@@ -9,9 +9,9 @@ The chat history is not a source of truth. If a later decision changes this road
 ## Project Baseline
 
 - Development continues on the fork's `v2/` implementation and the React/Vite plus FastAPI Web UI under `app/`.
-- The fork was based on upstream v2.0.0 (`284a650`). Upstream v2.2.0 is a design reference, not a merge target.
-- Do not rename `v2/` to `hedge_fund/`, introduce the Textual TUI, remove `app/`, or perform the upstream PyPI packaging migration as part of this roadmap.
-- Do not merge `origin/main` wholesale. Port selected concepts into the current architecture and preserve the fork's behavior where it is more historically correct.
+- The fork was based on upstream v2.0.0 (`284a650`). The approved migration now pins fork `5fca1b4` and upstream `fc1bf25`.
+- `integrate-upstream-and-isolate-research-app` supersedes the former no-merge/no-rename restriction: isolate the Web app, then merge upstream and migrate `v2/` to `hedge_fund/` with staged acceptance.
+- Preserve Web historical semantics and SQLite persistence while retaining upstream CLI/TUI separately. File removals require exact-target approval; visual redesign follows functional migration.
 - SQLite and SQLAlchemy are the fork's persistence mechanism for cached market data, simulation state, NAV, trades, and future audit records.
 - The Web UI remains the primary interface for configuring data acquisition and simulations.
 

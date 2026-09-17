@@ -1,0 +1,8 @@
+{
+  "baseline_commit": "5fca1b4",
+  "fixture": "test_runner_uses_prior_signal_next_open_and_isolated_sim_tables",
+  "nav": [1000.0, 1082.004, 1165.004],
+  "benchmark_nav": [1000.0, 1010.0, 1020.0],
+  "fills": [{"date": "2024-01-11", "ticker": "AAA", "side": "BUY", "quantity": 83, "price": 12.0, "fee": 0.996}],
+  "cycle_count": 2
+}

@@ -1,0 +1,10 @@
+name: migration-events
+universe: [AAA]
+capital: 1000
+strategies:
+  - name: value
+    models:
+      - name: buffett
+risk:
+  max_position_pct: 1.0
+  max_gross_exposure: 1.0

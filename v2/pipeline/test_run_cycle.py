@@ -68,6 +68,27 @@ def _spec(universe=("AAPL", "MSFT", "NVDA"), strategies=None,
 CLOSES = {"AAPL": 200.0, "MSFT": 400.0, "NVDA": 100.0}
 
 
+@pytest.mark.parametrize('ratio', [2.0, 0.4, 1.5])
+def test_split_sizing_preserves_equity_and_signal_marks(ratio):
+    from v2.brokers.models import Order
+    broker = SimBroker(cash=1010, fee_rate=0)
+    broker.place_order(Order(ticker='AAPL', side='buy', quantity=101, price=10))
+    execution_price = 10 / ratio
+    broker.apply_split('AAPL', ratio, execution_price)
+    fund = Fund(_spec(universe=('AAPL',), max_position_pct=1),
+                models={'solo': [FakeAnalyst('a', {'AAPL': 1})]})
+    record = run_cycle(fund, '2024-01-09', broker, FakeDataClient({'AAPL': 10}),
+        execution_prices={'AAPL': execution_price},
+        valuation_prices={'AAPL': execution_price}, execution_date='2024-01-10',
+        sizing_split_ratios={'AAPL': ratio})
+    assert record.marks == {'AAPL': 10}
+    assert record.sizing_marks['AAPL'] == pytest.approx(execution_price)
+    assert record.equity_before == pytest.approx(1010)
+    assert record.nav == pytest.approx(1010)
+    assert record.cash >= -1e-9
+    assert not record.orders
+
+
 # ---------------------------------------------------------------------------
 # The happy path
 # ---------------------------------------------------------------------------

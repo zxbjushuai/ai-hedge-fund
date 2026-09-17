@@ -78,7 +78,8 @@ class CycleRecord(BaseModel):
     execution_date: str | None = None
     spec: FundSpec                      # self-contained audit copy
     universe: list[str]                 # effective run-time universe for this cycle
-    marks: dict[str, float]             # ticker -> T close used for signal sizing
+    marks: dict[str, float]             # ticker -> original T close seen by analysts
+    sizing_marks: dict[str, float] = Field(default_factory=dict)  # split-consistent share units; empty in old audits
     execution_prices: dict[str, float]  # ticker -> exact price eligible for execution
     valuation_prices: dict[str, float]  # ticker -> close used for ending NAV
     skipped: list[TickerSkip]

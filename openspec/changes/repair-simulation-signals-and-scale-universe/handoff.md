@@ -1,5 +1,16 @@
 # Current Handoff
 
+## Migration update — 2026-09-17
+
+The previous worktree status below is historical: Workstream 5 and cache UX are
+included in baseline `5fca1b4`. Active work is now
+`integrate-upstream-and-isolate-research-app` on `migration/upstream-web-isolation`.
+The original `zxb_dev` reference is unchanged. Fixed upstream target: `fc1bf25`.
+Stage 0/1 implementation and verification are underway; there has been no merge,
+commit, deletion or real-data relocation. See the new change handoff for gates.
+The previous no-upstream-merge/no-package-rename constraint is superseded by the
+approved staged plan; visual redesign remains separate.
+
 ## Status
 
 - Parent change: `repair-simulation-signals-and-scale-universe`

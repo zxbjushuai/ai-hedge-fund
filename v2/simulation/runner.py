@@ -476,6 +476,11 @@ class SimRunner:
                         execution_prices=opens, valuation_prices=closes, execution_date=day,
                         universe=self._tickers,
                         persona_engine=persona_engine,
+                        sizing_split_ratios={
+                            action.ticker: action.value
+                            for action in corporate_actions
+                            if action.action_type == "split"
+                        },
                     )
                     record.corporate_actions = corporate_actions
                 except Exception as exc:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,8 +28,8 @@ def prompt_key(agent: str, model_identity: str, system: str, user: str) -> str:
 
 
 class PromptCache:
-    def __init__(self, cache_dir: Path | str = DEFAULT_CACHE_DIR) -> None:
-        self._dir = Path(cache_dir)
+    def __init__(self, cache_dir: Path | str | None = None) -> None:
+        self._dir = Path(cache_dir if cache_dir is not None else os.environ.get("PROMPT_CACHE_DIR", DEFAULT_CACHE_DIR))
 
     def get(self, key: str) -> dict | None:
         path = self._dir / f"{key}.json"

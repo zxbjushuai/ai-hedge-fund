@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import date as _date
 from datetime import timedelta
+import math
 from typing import TYPE_CHECKING
 
 from v2.brokers.models import Fill
@@ -61,6 +62,7 @@ def run_cycle(
     execution_date: str | None = None,
     universe: list[str] | None = None,
     persona_engine: PersonaSignalEngine | None = None,
+    sizing_split_ratios: dict[str, float] | None = None,
 ) -> CycleRecord:
     """Run one tick of *fund* as of *as_of* (YYYY-MM-DD) and return the record."""
     spec = fund.spec
@@ -73,9 +75,17 @@ def run_cycle(
         sorted(set(effective_universe) | set(held)), as_of, held, data_client,
     )
 
+    # Holdings may already reflect execution-day splits. Translate only sizing
+    # marks to those share units; analysts must still see the historical T prices.
+    sizing_marks = dict(marks)
+    for ticker, ratio in (sizing_split_ratios or {}).items():
+        if not math.isfinite(ratio) or ratio <= 0:
+            raise ValueError(f"invalid sizing split ratio for {ticker}")
+        if ticker in sizing_marks:
+            sizing_marks[ticker] /= ratio
     cash_before = broker.cash()
     equity_before = cash_before + sum(
-        p.shares * marks[t] for t, p in held.items()
+        p.shares * sizing_marks[t] for t, p in held.items()
     )
     if equity_before <= 0:
         raise ValueError(
@@ -157,6 +167,7 @@ def run_cycle(
         spec=spec,
         universe=effective_universe,
         marks=marks,
+        sizing_marks=sizing_marks,
         execution_prices=order_marks,
         valuation_prices=nav_marks,
         skipped=skipped,
