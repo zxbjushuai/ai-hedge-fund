@@ -35,7 +35,10 @@ fund.db confirms status completed, requested interval 2026-06-03 through
 112 trade records. This closes the user-run simulation acceptance gate; it is
 not a claim that every model response or investment decision was independently
 audited. No additional live requests were initiated for this verification.
-Development-branch integration and remote push are not authorized and not done.
+On 2026-09-17 the user authorized development-branch integration with a backup.
+Created `zxb_dev_bak` at `5fca1b4` before modifying `zxb_dev`. Committed sim9
+acceptance as `628f993`, then fast-forwarded `zxb_dev` to that migration checkpoint.
+The upstream merge ancestry is preserved. Remote push remains unperformed.
 All prior status notes below are historical, superseded by this section.
 
 Current gate: user confirmed manual acceptance on 2026-09-17. Stage 0/1 acceptance

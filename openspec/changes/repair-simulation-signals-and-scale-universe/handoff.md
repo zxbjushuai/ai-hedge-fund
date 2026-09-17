@@ -11,7 +11,8 @@ historical simulation/audit, providers, cache search and AAPL detail using backu
 copies. Parent/change history documents remain preserved.
 Stage 4 simulation acceptance passed: user confirmed sim9; read-only verification
 found completed status, 71 completed cycles, 72 NAV snapshots and 112 trades.
-Development-branch integration still requires authorization. No push done.
+User authorized integration: `zxb_dev_bak` preserves pre-migration `5fca1b4`;
+`zxb_dev` fast-forwarded to migration checkpoint `628f993`. No push done.
 See `integrate-upstream-and-isolate-research-app/handoff.md` for details.
 
 ## Migration update — 2026-09-17

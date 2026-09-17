@@ -17,4 +17,4 @@
 - [x] Verify both upstream and custom semantics (offline suite, CLI receipts, TUI home, Web backup-copy browser smoke).
 - [x] Remove approved obsolete code and dependencies; preserve DB tables and OpenSpec history.
 - [x] Record user-run sim9 acceptance and verify persisted completion read-only (71 completed cycles, 72 NAV snapshots, 112 trades).
-- [ ] Integrate into development only when explicitly authorized; record final integration checkpoint.
+- [x] User-authorized integration: back up zxb_dev as zxb_dev_bak at 5fca1b4, then fast-forward zxb_dev to migration checkpoint 628f993. No push.

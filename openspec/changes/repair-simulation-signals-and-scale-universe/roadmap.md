@@ -8,9 +8,9 @@ The chat history is not a source of truth. If a later decision changes this road
 
 ## Project Baseline
 
-- Stage 4 user-run simulation acceptance passed on 2026-09-17: sim9 completed with 71 completed cycles, 72 NAV snapshots and 112 trades (read-only DB verification). Development-branch integration remains pending explicit authorization.
+- Stage 4 completed on 2026-09-17: sim9 completed with 71 completed cycles, 72 NAV snapshots and 112 trades (read-only DB verification). User-authorized integration fast-forwarded `zxb_dev` to migration checkpoint `628f993`; `zxb_dev_bak` preserves `5fca1b4`. No remote push.
 - Migration stages 1–3 use one `hedge_fund/` core and the React/Vite plus FastAPI Web UI under `research_app/`. The former `v2/` and `app/` source paths are retired; the old SQLite file locations remain unchanged.
-- Integration branch: `migration/upstream-web-isolation`; stage 1 checkpoint `5b714d2`, real upstream merge `5d1c480` (parents include `fc1bf25`). Development branch and remote have not been changed.
+- Integration branch: `migration/upstream-web-isolation`; stage 1 checkpoint `5b714d2`, real upstream merge `5d1c480` (parents include `fc1bf25`). Development branch now includes the migration; remote remains unchanged.
 - The fork was based on upstream v2.0.0 (`284a650`). The approved migration now pins fork `5fca1b4` and upstream `fc1bf25`.
 - `integrate-upstream-and-isolate-research-app` supersedes the former no-merge/no-rename restriction: isolate the Web app, then merge upstream and migrate `v2/` to `hedge_fund/` with staged acceptance.
 - Preserve Web historical semantics and SQLite persistence while retaining upstream CLI/TUI separately. File removals require exact-target approval; visual redesign follows functional migration.
