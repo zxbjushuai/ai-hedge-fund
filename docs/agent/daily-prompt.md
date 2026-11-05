@@ -20,6 +20,19 @@ you. When a task needs evidence, use `scripts/aihf_ops.py` (skill
 cumulative simulation, and analyze recent runs. Carried-book continuous mode is
 backlog AIHF-016; implement it when prioritized.
 
+If `docs/agent/priority.md` exists, treat it as a priority override for this run:
+do that item first. When it is complete, rename the file to
+`docs/agent/priority.done.md` and update the backlog.
+
+## Resource limits
+
+- Do **not** run `git push` yourself. The wrapper pushes at most once per day.
+- Keep commits coherent and few. Do not create dozens of tiny commits, amend,
+  or force-push. Accumulate the day's work and let the wrapper push once.
+- At most 4 simulation/backtest runs per day; reuse results instead of rerunning.
+- You may improve `scripts/aihf_ops.py` and the backtest tooling (AIHF-017) as
+  part of your work, with tests.
+
 Then:
 
 1. Read `AGENTS.md`, `docs/agent/backlog.md`, the latest `docs/agent-daily/*.md`,
@@ -28,9 +41,10 @@ Then:
    `scripts/aihf_ops.py status` / `analyze --last 3`, TODO/FIXME, data
    freshness). Record findings.
 3. Pick exactly one backlog item. Prefer the highest priority item that can be
-   finished and verified today. Do not start a second feature. If the item is
-   strategy/performance related, run a baseline backtest before the change and
-   the same backtest after, and report both.
+   finished and verified today. If `docs/agent/priority.md` exists, that item
+   wins. Do not start a second feature. If the item is strategy/performance
+   related, run a baseline backtest before the change and the same backtest
+   after, and report both.
 4. Implement the change with tests. Keep the diff small and focused.
 5. Run the full verification suite:
    - `.venv/bin/python -m pytest research_app/backend hedge_fund -q`

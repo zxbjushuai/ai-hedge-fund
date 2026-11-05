@@ -68,6 +68,17 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+HOOK="$REPO/.git/hooks/pre-push"
+cat >"$HOOK" <<'HOOK_EOF'
+#!/usr/bin/env bash
+if [ "${AIHF_ALLOW_PUSH:-0}" != "1" ]; then
+    echo "push blocked: the agent wrapper pushes at most once per day" >&2
+    exit 1
+fi
+exit 0
+HOOK_EOF
+chmod +x "$HOOK"
+
 git fetch fork >/dev/null 2>&1 || true
 if git ls-remote --exit-code --heads fork "$BRANCH" >/dev/null 2>&1; then
     git pull --ff-only fork "$BRANCH" || true
@@ -192,12 +203,20 @@ if [ "$COMMITS" = "0" ]; then
     exit 0
 fi
 
+PUSH_MARKER="$HOME/.local/state/aihf-last-push-date"
+mkdir -p "$(dirname "$PUSH_MARKER")"
+LAST_PUSH="$(cat "$PUSH_MARKER" 2>/dev/null || true)"
 if [ "$PUSH_ENABLED" = "1" ]; then
-    if git push fork "$BRANCH"; then
+    if [ "$LAST_PUSH" = "$DATE" ]; then
+        echo "already pushed today ($DATE); skipping push"
+    elif AIHF_ALLOW_PUSH=1 git push fork "$BRANCH"; then
+        echo "$DATE" >"$PUSH_MARKER"
         echo "pushed to fork/$BRANCH"
     else
         echo "push failed (check the deploy key)"
     fi
+else
+    echo "push disabled (PUSH_ENABLED=0)"
 fi
 
 CHANGED="$(git diff --name-only "$BASE_TAG" HEAD)"

@@ -109,6 +109,15 @@ when to fetch data and run simulations:
 - There is no scheduled data/simulation timer; the agent uses
   `scripts/aihf_ops.py` on demand. Do not recreate a fixed simulation timer
   unless the user asks.
+- `docs/agent/priority.md`, when present, overrides the backlog choice for the
+  next run; rename it to `priority.done.md` when complete.
+- **Push policy**: the agent must not run `git push`. The wrapper pushes at most
+  once per day (`PUSH_ENABLED=1` plus `~/.local/state/aihf-last-push-date`); a
+  pre-push hook blocks pushes unless the wrapper sets `AIHF_ALLOW_PUSH=1`.
+- **Commit management**: one or a few coherent commits per run; no commit spam,
+  no amend, no force-push. Accumulate work and let the wrapper push once.
+- **Resource limits**: at most 4 simulation/backtest runs per agent run; reuse
+  results. The agent may improve `scripts/aihf_ops.py` and backtest tooling.
 - Full access is enabled at the user's request. Backups, tags, test gates and
   rollback are mandatory to compensate.
 - Only push `agent/daily` when `PUSH_ENABLED=1` in `agent.env`. Unless the user
