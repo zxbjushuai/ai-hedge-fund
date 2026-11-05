@@ -52,14 +52,21 @@ npm --prefix research_app/frontend run build
 
 - Provider DB: `~/.hedge-fund/research/providers.db` (SQLite, plaintext keys,
   mode 600). Do not commit it.
-- Active connection: id `1`, `vendor=opencode_go`, `protocol=openai_chat_completions`,
-  `base_url=https://opencode.ai/zen/go/v1`, model `deepseek-v4.1-flash`.
+- Simulation connection: `sub2api opencode go` (id `4`), `vendor=custom`,
+  `protocol=openai_chat_completions`, `base_url=http://127.0.0.1:18080/v1`,
+  model `deepseek-v4.1-flash`. It uses Sub2API group `opencode go` (group 8),
+  which routes to the OpenCode Go account.
+- Fallback direct connection: id `1`, `vendor=opencode_go`,
+  `protocol=openai_chat_completions`, `base_url=https://opencode.ai/zen/go/v1`,
+  same model.
+- Sub2API groups: `openai-default` (key 1, OpenAI account) and `opencode go`
+  (group 8, key 2, OpenCode Go account). The OpenAI-group key cannot see
+  `deepseek-v4.1-flash`; use key 2 for Go models.
 - Key: `~/.config/ai-hedge-fund/agent.env` → `OPENCODE_API_KEY` (mode 600).
   Never print or commit it.
 - Codex CLI: provider `opencode-go` (Responses API) in `~/.codex/config.toml`;
   profile `~/.codex/opencode-go.config.toml` uses `deepseek-v4.1-flash`.
-- Sub2API on this machine currently exposes only OpenAI models, not
-  `deepseek-v4.1-flash`; do not route this model through Sub2API.
+  It uses the direct OpenCode Go endpoint, not Sub2API.
 
 ## Data and state
 

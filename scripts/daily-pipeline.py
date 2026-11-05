@@ -23,6 +23,7 @@ UNIVERSE = Path(
 OUT_DIR = REPO / "logs" / "daily"
 BENCHMARK = os.environ.get("AIHF_BENCHMARK", "SPY")
 CONNECTION_ID = int(os.environ.get("AIHF_CONNECTION_ID", "1"))
+CONNECTION_NAME = os.environ.get("AIHF_CONNECTION_NAME", "sub2api opencode go")
 MODEL = os.environ.get("AIHF_MODEL", "deepseek-v4.1-flash")
 CONCURRENCY = int(os.environ.get("AIHF_CONCURRENCY", "4"))
 CACHE_DAYS = int(os.environ.get("AIHF_CACHE_DAYS", "35"))
@@ -57,6 +58,14 @@ def api(method: str, path: str, payload: dict | None = None) -> dict:
             f"{method} {path} -> {response.status_code}: {response.text[:800]}"
         )
     return response.json()
+
+
+def resolve_connection_id() -> int:
+    providers = api("GET", "/dashboard/llm/providers").get("providers", [])
+    for provider in providers:
+        if provider.get("name") == CONNECTION_NAME:
+            return int(provider["id"])
+    return CONNECTION_ID
 
 
 def wait_cache(job_id: str) -> dict:
@@ -100,6 +109,8 @@ def main() -> int:
     tickers = load_universe()
 
     api("GET", "/health")
+    connection_id = resolve_connection_id()
+    print("connection_id:", connection_id, "model:", MODEL, flush=True)
 
     data_types = ["prices"]
     if end.weekday() == 0:
@@ -128,7 +139,7 @@ def main() -> int:
         "end_date": end.isoformat(),
         "initial_capital": 100000,
         "name": "daily-" + end.isoformat(),
-        "llm_connection_id": CONNECTION_ID,
+        "llm_connection_id": connection_id,
         "model": MODEL,
         "llm_concurrency": CONCURRENCY,
         "confirm_cost": True,
