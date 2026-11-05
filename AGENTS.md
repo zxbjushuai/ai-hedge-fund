@@ -104,6 +104,10 @@ npm --prefix research_app/frontend run build
   `openspec-*` skills.
 - Simulation correctness matters: no lookahead, raw price mode, benchmark
   coverage, persona abstention, and deterministic tests.
+- The daily simulation is currently an **independent** rolling-window run
+  (fresh `initial_capital` each day). Continuous carried-book paper trading is
+  backlog item AIHF-016; do not claim that NAV carries over until it is
+  implemented.
 
 ## Known gaps (see `docs/agent/backlog.md`)
 

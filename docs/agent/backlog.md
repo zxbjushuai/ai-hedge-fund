@@ -3,10 +3,17 @@
 One item per day. Pick the highest-priority unfinished item that can be completed
 and verified in one run. Update status with the date and commit hash.
 
+## Current daily behavior
+
+The daily pipeline (`scripts/daily-pipeline.py`) runs an **independent**
+simulation over the last 14 days each day, starting from `initial_capital`.
+It does not carry cash/positions from the previous day's run. Continuous
+paper-trading is tracked by AIHF-016.
+
 ## P0 — daily pipeline and reliability
 
 ### AIHF-001 — Daily data + simulation pipeline
-Status: done (2026-11-05, `17b97a0`; verified with AAPL/MSFT/SPY, sim #12)
+Status: done (2026-11-05, `17b97a0`; verified with AAPL/MSFT/SPY, sim #12 direct and sim #13 via Sub2API)
 Goal: implement `scripts/daily-pipeline.py` that syncs/pulls US prices for the
 configured universe, waits for the cache job, preflights, runs a simulation with
 `llm_connection_id=1` / `deepseek-v4.1-flash`, polls to completion, and writes
@@ -35,6 +42,18 @@ using fixtures/mocks (no network).
 Acceptance: tests run in CI/locally with `-m 'not live'`.
 
 ## P1 — correctness and operations
+
+### AIHF-016 — Carried-book daily simulation (paper trading)
+Status: open
+Goal: make the daily run continue from the previous run instead of starting
+fresh. Seed the next run's broker with the prior run's closing cash/positions
+(including corporate actions), advance one trading day, and persist a
+continuous NAV/position history.
+Acceptance: a multi-day chain of runs shows carried cash/positions; NAV
+continuity tests; no lookahead; docs updated.
+Notes: ROADMAP "persistent ledger read half"; `nav_snapshot`,
+`position_snapshot`, `sim_*` tables already store state; `SimRunner` currently
+always creates a fresh `SimBroker`.
 
 ### AIHF-005 — Provider bootstrap script
 Status: open
