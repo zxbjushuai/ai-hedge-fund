@@ -58,6 +58,7 @@ def persist_completed_cycle(
             cash=record.cash,
             equity=record.nav - record.cash,
             benchmark_nav=benchmark_nav,
+            positions_json=json.dumps(record.positions, sort_keys=True),
         ))
         for fill in record.fills:
             session.add(SimTradeLog(

@@ -55,9 +55,11 @@ def _migrate(engine) -> None:
             "llm_base_url": "VARCHAR(500)",
             "persona_refresh_policy": "TEXT",
             "execution_config": "TEXT",
+            "carried_from_run_id": "INTEGER",
         },
         "sim_nav_snapshot": {
             "benchmark_nav": "FLOAT",
+            "positions_json": "TEXT NOT NULL DEFAULT '{}'",
         },
         "metrics_cache": {
             "filing_date_source": "VARCHAR(32) NOT NULL DEFAULT 'estimated_45d'",

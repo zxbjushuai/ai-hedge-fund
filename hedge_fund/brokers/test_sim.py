@@ -83,3 +83,16 @@ def test_sell_with_fee():
     assert fill.fee == pytest.approx(expected_fee)
     assert fill.total_amount == pytest.approx(gross - expected_fee)
     assert broker.cash() == pytest.approx(gross - expected_fee)
+
+
+def test_seed_positions_are_copied_without_synthetic_trades():
+    source = {"AAPL": 10, "MSFT": -3, "ZERO": 0}
+    broker = SimBroker(cash=250.0, positions=source)
+
+    source["AAPL"] = 99
+
+    assert broker.cash() == pytest.approx(250.0)
+    assert broker.positions()["AAPL"].shares == 10
+    assert broker.positions()["MSFT"].shares == -3
+    assert "ZERO" not in broker.positions()
+    assert broker._last_trades == []

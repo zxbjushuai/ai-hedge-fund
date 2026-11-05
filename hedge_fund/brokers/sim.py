@@ -19,9 +19,18 @@ from hedge_fund.brokers.models import Fill, Order, Position
 class SimBroker:
     """In-memory broker: signed positions plus a cash balance."""
 
-    def __init__(self, cash: float, fee_rate: float = 0.0) -> None:
+    def __init__(
+        self,
+        cash: float,
+        fee_rate: float = 0.0,
+        positions: dict[str, int] | None = None,
+    ) -> None:
         self._cash = cash
-        self._shares: dict[str, int] = {}
+        self._shares = {
+            ticker.upper(): shares
+            for ticker, shares in (positions or {}).items()
+            if shares != 0
+        }
         self._fee_rate = fee_rate
         self._last_trades: list[dict] = []
 

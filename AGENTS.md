@@ -59,12 +59,14 @@ when to fetch data and run simulations:
 .venv/bin/python scripts/aihf_ops.py backtest --days 180
 .venv/bin/python scripts/aihf_ops.py simulate --start 2026-01-02 --end 2026-06-30
 .venv/bin/python scripts/aihf_ops.py cumulative --since 2026-01-02
+.venv/bin/python scripts/aihf_ops.py continue --from-run 16 --end 2026-11-05
 .venv/bin/python scripts/aihf_ops.py analyze --last 5
 ```
 
 - `backtest` = historical range for strategy comparison and optimization.
 - `cumulative` = interim continuous window from a fixed start (recomputed).
-- `continue` / carried-book daily mode = backlog AIHF-016 (not implemented).
+- `continue` = carried-book daily mode. It inherits the selected completed
+  run's final cash/positions and starts on that run's valuation date.
 - Results are saved under `logs/ops/`; the old `scripts/daily-pipeline.py` is a
   manual rolling-window tool, not a timer.
 
@@ -136,10 +138,10 @@ when to fetch data and run simulations:
   `openspec-*` skills.
 - Simulation correctness matters: no lookahead, raw price mode, benchmark
   coverage, persona abstention, and deterministic tests.
-- The daily simulation is currently an **independent** rolling-window run
-  (fresh `initial_capital` each day). Continuous carried-book paper trading is
-  backlog item AIHF-016; do not claim that NAV carries over until it is
-  implemented.
+- Daily paper trading can be **carried-book** by passing
+  `carried_from_run_id` or using `aihf_ops.py continue`; the child inherits the
+  parent's final cash and signed positions. Standalone `simulate`, `backtest`,
+  and `cumulative` runs still start independently unless explicitly chained.
 
 ## Known gaps (see `docs/agent/backlog.md`)
 

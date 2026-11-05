@@ -118,7 +118,9 @@ def test_additive_migration_adds_nullable_benchmark_and_llm_columns(tmp_path: Pa
     assert "llm_connection_name" in run_columns
     assert "llm_base_url" in run_columns
     assert "persona_refresh_policy" in run_columns
+    assert "carried_from_run_id" in run_columns
     assert "benchmark_nav" in nav_columns
+    assert "positions_json" in nav_columns
     with sqlite3.connect(db) as migrated:
         tables = {
             row[0] for row in migrated.execute(

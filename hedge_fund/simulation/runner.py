@@ -24,6 +24,7 @@ from hedge_fund.persistence.models import (
 from hedge_fund.pipeline import run_cycle
 from hedge_fund.pipeline.models import CorporateActionRecord
 from hedge_fund.simulation.audit import persist_completed_cycle, persist_failed_cycle
+from hedge_fund.simulation.carried import CarriedBook, load_carried_book
 from hedge_fund.simulation.persona_state import PersonaSignalEngine
 from hedge_fund.simulation.observation import RunObservation
 
@@ -303,6 +304,7 @@ class SimRunner:
         fund_spec_path: str,
         llm: LLMClient | None = None,
         fee_rate: float = 0.001,
+        carried_from_run_id: int | None = None,
     ) -> None:
         self._id = sim_run_id
         self._tickers = tickers
@@ -314,6 +316,7 @@ class SimRunner:
         self._fund_spec_path = fund_spec_path
         self._llm = llm
         self._fee_rate = fee_rate
+        self._carried_from_run_id = carried_from_run_id
         self._thread: threading.Thread | None = None
         self._concurrency = 1
         self.observer = None
@@ -343,6 +346,7 @@ class SimRunner:
         llm_base_url: str | None = None,
         llm_concurrency: int = 1,
         preflight_summary: dict | None = None,
+        carried_from_run_id: int | None = None,
     ) -> int:
         """Create a SimRun row and return its id. Call start() to run."""
         init_db(db_path)
@@ -356,6 +360,15 @@ class SimRunner:
         benchmark = benchmark.strip().upper()
         if not benchmark:
             raise ValueError("benchmark is empty")
+        if carried_from_run_id is not None:
+            carried_book = load_carried_book(
+                db_path,
+                carried_from_run_id,
+                expected_start=start_date,
+                expected_tickers=tickers,
+                expected_benchmark=benchmark,
+            )
+            initial_capital = carried_book.nav
         if llm is not None:
             client_protocol = getattr(llm, "protocol", None)
             if llm_provider is not None and llm_provider != llm.provider:
@@ -394,6 +407,7 @@ class SimRunner:
                 start_date=start_date,
                 end_date=end_date,
                 initial_capital=initial_capital,
+                carried_from_run_id=carried_from_run_id,
                 status="pending",
                 total_days=len(days),
                 persona_refresh_policy=configured_policy.model_dump_json(),
@@ -425,6 +439,7 @@ class SimRunner:
                 fund_spec_path=fund_spec_path,
                 llm=llm,
                 fee_rate=fee_rate,
+                carried_from_run_id=carried_from_run_id,
             )
             _RUNNERS[sim_id] = runner
             runner._concurrency = llm_concurrency
@@ -483,13 +498,28 @@ class SimRunner:
             )
             days = list(benchmark_closes)
             data_client = MockDataClient(self._db_path)
-            broker = SimBroker(cash=self._capital, fee_rate=self._fee_rate)
+            carried_book = self._load_carried_book()
+            if carried_book is None:
+                broker = SimBroker(cash=self._capital, fee_rate=self._fee_rate)
+                initial_nav = self._capital
+                initial_cash = self._capital
+                initial_positions: dict[str, int] = {}
+            else:
+                broker = SimBroker(
+                    cash=carried_book.cash,
+                    positions=carried_book.positions,
+                    fee_rate=self._fee_rate,
+                )
+                initial_nav = carried_book.nav
+                initial_cash = carried_book.cash
+                initial_positions = carried_book.positions
             fund = Fund(spec, llm=self._llm)  # one immutable client for this run
             persona_engine = PersonaSignalEngine(spec.persona_refresh, self._concurrency, self.observer)
             benchmark_base = benchmark_closes[days[0]]
             self._save_nav_snapshot(
-                get_session(self._db_path), days[0], self._capital,
-                self._capital, 0.0, self._capital,
+                get_session(self._db_path), days[0], initial_nav,
+                initial_cash, initial_nav - initial_cash, initial_nav,
+                initial_positions,
             )
             self._set_progress(1)
             for i, day in enumerate(days[1:], start=1):
@@ -529,7 +559,7 @@ class SimRunner:
                     raise
 
                 benchmark_nav = (
-                    self._capital * benchmark_closes[day] / benchmark_base
+                    initial_nav * benchmark_closes[day] / benchmark_base
                 )
 
                 self.observer.phase("persisting")
@@ -561,6 +591,17 @@ class SimRunner:
                 PriceCache.ticker.in_(self._tickers), PriceCache.date == day
             )).scalars().all()
         return ({r.ticker: r.open for r in rows}, {r.ticker: r.close for r in rows})
+
+    def _load_carried_book(self) -> CarriedBook | None:
+        if self._carried_from_run_id is None:
+            return None
+        return load_carried_book(
+            self._db_path,
+            self._carried_from_run_id,
+            expected_start=self._start,
+            expected_tickers=self._tickers,
+            expected_benchmark=self._benchmark,
+        )
 
     def _apply_corporate_actions(self, broker: SimBroker, day: str, opens: dict[str, float]) -> list[CorporateActionRecord]:
         """Apply actions to positions carried from the preceding close."""
@@ -610,6 +651,7 @@ class SimRunner:
         cash: float,
         equity: float,
         benchmark_nav: float,
+        positions: dict[str, int],
     ) -> None:
         try:
             snap = SimNavSnapshot(
@@ -619,6 +661,7 @@ class SimRunner:
                 cash=cash,
                 equity=equity,
                 benchmark_nav=benchmark_nav,
+                positions_json=json.dumps(positions, sort_keys=True),
             )
             session.add(snap)
             session.commit()
@@ -673,6 +716,7 @@ def get_sim_status(sim_id: int, db_path: str) -> dict | None:
             "execution_config": json.loads(run.execution_config) if run.execution_config else None,
             "total_days": run.total_days,
             "final_nav": run.final_nav,
+            "carried_from_run_id": run.carried_from_run_id,
             "provider": run.llm_provider,
             "protocol": run.llm_protocol,
             "model": run.llm_model,
@@ -727,6 +771,7 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
                 "cash": n.cash,
                 "equity": n.equity,
                 "benchmark_nav": n.benchmark_nav,
+                "positions": json.loads(n.positions_json or "{}"),
             }
             for n in nav_rows
         ]
@@ -798,6 +843,7 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "start_date": run.start_date,
             "end_date": run.end_date,
             "initial_capital": run.initial_capital,
+            "carried_from_run_id": run.carried_from_run_id,
             "benchmark": run.benchmark,
             "provider": run.llm_provider,
             "protocol": run.llm_protocol,
@@ -855,6 +901,7 @@ def list_sim_runs(db_path: str) -> list[dict]:
                 "start_date": r.start_date,
                 "end_date": r.end_date,
                 "initial_capital": r.initial_capital,
+                "carried_from_run_id": r.carried_from_run_id,
                 "benchmark": r.benchmark,
                 "provider": r.llm_provider,
                 "protocol": r.llm_protocol,

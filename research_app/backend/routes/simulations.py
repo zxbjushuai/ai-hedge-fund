@@ -86,11 +86,24 @@ def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
         estimate_persona_event_schedule,
         validate_cached_data,
     )
+    from hedge_fund.simulation.carried import load_carried_book
 
     tickers = data.tickers
     start_date, end_date = data.start_date.isoformat(), data.end_date.isoformat()
     benchmark = data.benchmark
     spec = load_spec(_fund_path())
+    carried_book = None
+    if data.carried_from_run_id is not None:
+        carried_book = load_carried_book(
+            _DB_PATH,
+            data.carried_from_run_id,
+            expected_start=start_date,
+            expected_tickers=tickers,
+            expected_benchmark=benchmark,
+        )
+    effective_initial_capital = (
+        carried_book.nav if carried_book is not None else data.initial_capital
+    )
     require_earnings = any(model.name == "pead" for strategy in spec.strategies for model in strategy.models)
     errors, warnings = validate_cached_data(
         _DB_PATH, tickers, benchmark, start_date, end_date, require_earnings,
@@ -139,6 +152,17 @@ def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
         "persona_refresh_policy": spec.persona_refresh.model_dump(),
         "provider": provider,
         "model": model_name,
+        "initial_capital": effective_initial_capital,
+        "carried_book": (
+            {
+                "run_id": carried_book.run_id,
+                "valuation_date": carried_book.valuation_date,
+                "nav": carried_book.nav,
+                "cash": carried_book.cash,
+                "positions": carried_book.positions,
+            }
+            if carried_book is not None else None
+        ),
         "benchmark": benchmark,
         "trading_days": len(trading_days),
         "enabled_models": [model.name for strategy in spec.strategies for model in strategy.models],
@@ -213,6 +237,7 @@ def sim_run(data: SimRunRequest):
             preflight_summary={key: preflight[key] for key in (
                 "estimated_llm_calls", "estimate_kind", "trading_days",
             )},
+            carried_from_run_id=data.carried_from_run_id,
         )
         runner = SimRunner._get(sim_id)
         if runner is None:

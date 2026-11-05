@@ -242,6 +242,9 @@ class SimRun(Base):
     start_date: Mapped[str] = mapped_column(String(10), nullable=False)
     end_date: Mapped[str] = mapped_column(String(10), nullable=False)
     initial_capital: Mapped[float] = mapped_column(Float, nullable=False)
+    carried_from_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sim_run.id", ondelete="SET NULL"), nullable=True, default=None,
+    )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     current_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -316,6 +319,7 @@ class SimNavSnapshot(Base):
     cash: Mapped[float] = mapped_column(Float, nullable=False)
     equity: Mapped[float] = mapped_column(Float, nullable=False)
     benchmark_nav: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    positions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[str] = mapped_column(
         String(26), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat()
     )

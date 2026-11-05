@@ -114,12 +114,14 @@ def run_simulation(
     model: str,
     capital: float,
     concurrency: int,
+    benchmark: str | None = None,
+    carried_from_run_id: int | None = None,
 ) -> dict:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     connection_id = resolve_connection(connection)
     payload = {
         "tickers": tickers,
-        "benchmark": BENCHMARK,
+        "benchmark": benchmark or BENCHMARK,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
         "initial_capital": capital,
@@ -129,6 +131,8 @@ def run_simulation(
         "llm_concurrency": concurrency,
         "confirm_cost": True,
     }
+    if carried_from_run_id is not None:
+        payload["carried_from_run_id"] = carried_from_run_id
     preflight = api("POST", "/dashboard/sim/preflight", payload)
     print("preflight:", json.dumps(preflight, ensure_ascii=False)[:1200], flush=True)
     run = api("POST", "/dashboard/sim/run", payload)
@@ -284,12 +288,38 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_continue(args: argparse.Namespace) -> int:
-    print("carried-book continuous mode is not implemented yet (backlog AIHF-016).")
-    print(
-        "Use `python scripts/aihf_ops.py cumulative --since YYYY-MM-DD` for an interim "
-        "continuous window, or implement AIHF-016 to carry cash/positions between runs."
+    runs = api("GET", "/dashboard/sim/runs").get("runs", [])
+    if args.from_run is not None:
+        parent = next((run for run in runs if run.get("id") == args.from_run), None)
+        if parent is None:
+            raise ValueError(f"simulation run {args.from_run} not found")
+        if parent.get("status") != "completed":
+            raise ValueError(f"simulation run {args.from_run} is not completed")
+    else:
+        parent = next((run for run in runs if run.get("status") == "completed"), None)
+        if parent is None:
+            raise ValueError("no completed simulation run is available to continue")
+    result = api("GET", f"/dashboard/sim/result/{parent['id']}")
+    valuation_date = result.get("valuation_date")
+    if not valuation_date:
+        raise ValueError(f"simulation run {parent['id']} has no valuation date")
+    start = date.fromisoformat(valuation_date)
+    end = date.fromisoformat(args.end) if args.end else date.today()
+    if end <= start:
+        raise ValueError(f"continue end date must be after parent valuation date {start}")
+    record = run_simulation(
+        tickers=parent["tickers"],
+        start=start,
+        end=end,
+        name=args.name or f"continue-{parent['id']}-{end.isoformat()}",
+        connection=args.connection or parent.get("llm_connection_name") or DEFAULT_CONNECTION,
+        model=args.model or parent.get("model") or DEFAULT_MODEL,
+        capital=parent.get("initial_capital") or 100000,
+        concurrency=args.concurrency,
+        benchmark=parent.get("benchmark") or BENCHMARK,
+        carried_from_run_id=parent["id"],
     )
-    return 2
+    return 0 if record["status"].get("status") == "completed" else 1
 
 
 def add_sim_args(parser: argparse.ArgumentParser) -> None:
@@ -341,6 +371,12 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.set_defaults(func=cmd_analyze)
 
     cont = sub.add_parser("continue")
+    cont.add_argument("--from-run", type=int)
+    cont.add_argument("--end")
+    cont.add_argument("--connection")
+    cont.add_argument("--model")
+    cont.add_argument("--concurrency", type=int, default=4)
+    cont.add_argument("--name")
     cont.set_defaults(func=cmd_continue)
 
     return parser

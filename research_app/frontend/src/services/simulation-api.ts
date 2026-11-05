@@ -161,6 +161,7 @@ export interface SimRunRequest {
   start_date: string;
   end_date: string;
   initial_capital: number;
+  carried_from_run_id?: number | null;
   name?: string;
   confirm_cost?: boolean;
   provider?: string;
@@ -250,6 +251,7 @@ export interface SimNavPoint {
   cash: number;
   equity: number;
   benchmark_nav: number | null;
+  positions?: Record<string, number>;
 }
 
 export interface SimTrade {
@@ -271,6 +273,7 @@ export interface SimResult {
   start_date: string;
   end_date: string;
   initial_capital: number;
+  carried_from_run_id?: number | null;
   benchmark: string | null;
   provider: string | null;
   protocol: string | null;
@@ -411,6 +414,7 @@ export interface SimRunSummary {
   start_date: string;
   end_date: string;
   initial_capital: number;
+  carried_from_run_id?: number | null;
   benchmark: string | null;
   provider: string | null;
   protocol: string | null;
