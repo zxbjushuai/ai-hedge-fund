@@ -20,10 +20,13 @@ if ! flock -n 9; then
     echo "another agent run is active"
     exit 0
 fi
-if systemctl is-active --quiet aihf-daily.service; then
-    echo "daily pipeline is still running; skipping agent run"
-    exit 0
-fi
+DAILY_STATE="$(systemctl is-active aihf-daily.service || true)"
+case "$DAILY_STATE" in
+    active|activating|reloading)
+        echo "daily pipeline is still running; skipping agent run"
+        exit 0
+        ;;
+esac
 
 RUN_LOG="$LOG_ROOT/run-$TS.log"
 exec > >(tee -a "$RUN_LOG") 2>&1
