@@ -115,6 +115,7 @@ class SimRunRequest(CacheFetchRequest):
     initial_capital: float = Field(gt=0)
     name: str = Field(default="", max_length=100)
     confirm_cost: bool = False
+    llm_concurrency: int = Field(default=1, ge=1, le=8, strict=True)
     provider: str | None = Field(default=None, min_length=1, max_length=32)
     model: str | None = Field(default=None, min_length=1, max_length=200)
     llm_connection_id: int | None = Field(default=None, gt=0)

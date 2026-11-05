@@ -78,6 +78,14 @@ class AnthropicVendor(VendorAdapter):
 
 
 class OpenCodeGoVendor(VendorAdapter):
+    """Legacy direct-access adapter, retained and operational for old API/CLI users.
+
+    The Web UI no longer offers this vendor: new connections use a standard wire
+    protocol to Sub2API, which owns upstream-specific header/routing behavior.
+    Keep this implementation and registry entry so existing connection IDs,
+    credentials, simulations and explicit direct callers retain their semantics.
+    This is unused by the new Web workflow, not a broken or disabled adapter.
+    """
     id = "opencode_go"
     display_name = "OpenCode Go"
     supported_protocols = frozenset({

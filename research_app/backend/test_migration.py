@@ -55,6 +55,13 @@ def test_preserved_alembic_history_initializes_and_upgrades_twice(tmp_path):
         assert result.returncode == 0, result.stderr
 
 
+def test_provider_default_is_outside_checkout(monkeypatch):
+    from research_app.backend.config import load_settings
+    monkeypatch.delenv('LLM_DB_PATH', raising=False)
+    expected = Path('~/.hedge-fund/research/providers.db').expanduser().resolve()
+    assert load_settings().llm_db == expected
+
+
 def test_paths_do_not_depend_on_cwd(tmp_path, monkeypatch):
     from research_app.backend.config import ROOT, load_settings
     monkeypatch.chdir(tmp_path)

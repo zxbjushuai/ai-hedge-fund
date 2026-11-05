@@ -25,6 +25,7 @@ from hedge_fund.pipeline import run_cycle
 from hedge_fund.pipeline.models import CorporateActionRecord
 from hedge_fund.simulation.audit import persist_completed_cycle, persist_failed_cycle
 from hedge_fund.simulation.persona_state import PersonaSignalEngine
+from hedge_fund.simulation.observation import RunObservation
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,8 @@ class SimRunner:
         self._llm = llm
         self._fee_rate = fee_rate
         self._thread: threading.Thread | None = None
+        self._concurrency = 1
+        self.observer = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -338,9 +341,13 @@ class SimRunner:
         llm_connection_id: int | None = None,
         llm_connection_name: str | None = None,
         llm_base_url: str | None = None,
+        llm_concurrency: int = 1,
+        preflight_summary: dict | None = None,
     ) -> int:
         """Create a SimRun row and return its id. Call start() to run."""
         init_db(db_path)
+        if type(llm_concurrency) is not int or not 1 <= llm_concurrency <= 8:
+            raise ValueError("llm_concurrency must be an integer between 1 and 8")
         configured_policy = (
             load_spec(fund_spec_path).persona_refresh
             if Path(fund_spec_path).exists() else PersonaRefreshPolicy()
@@ -367,6 +374,7 @@ class SimRunner:
                 llm.model,
             )
         session = get_session(db_path)
+        observation = None
         try:
             days = _trading_days(db_path, benchmark, start_date, end_date)
             if len(days) < 2:
@@ -389,10 +397,19 @@ class SimRunner:
                 status="pending",
                 total_days=len(days),
                 persona_refresh_policy=configured_policy.model_dump_json(),
+                execution_config=json.dumps({"llm_concurrency": llm_concurrency,
+                                             "preflight": preflight_summary}),
             )
             session.add(run)
+            session.flush()
+            observation = RunObservation(run.id, llm_concurrency,
+                                         Path(db_path).resolve().parent / "logs" / "simulations")
             session.commit()
             sim_id = run.id
+        except Exception:
+            if observation is not None:
+                observation.close()
+            raise
         finally:
             session.close()
 
@@ -410,6 +427,12 @@ class SimRunner:
                 fee_rate=fee_rate,
             )
             _RUNNERS[sim_id] = runner
+            runner._concurrency = llm_concurrency
+            runner.observer = observation
+            observation.emit("created", connection_id=llm_connection_id,
+                             provider=llm_provider, protocol=llm_protocol, model=llm_model,
+                             execution_config={"llm_concurrency": llm_concurrency,
+                                               "preflight": preflight_summary})
         return sim_id
 
     def start(self) -> None:
@@ -426,7 +449,11 @@ class SimRunner:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
+        if self.observer is None:
+            self.observer = RunObservation(self._id, self._concurrency,
+                                           Path(self._db_path).resolve().parent / "logs" / "simulations")
         self._set_status("running")
+        self.observer.phase("simulation_started")
         try:
             spec = load_spec(self._fund_spec_path)
             spec = spec.model_copy(deep=True, update={"capital": self._capital})
@@ -458,7 +485,7 @@ class SimRunner:
             data_client = MockDataClient(self._db_path)
             broker = SimBroker(cash=self._capital, fee_rate=self._fee_rate)
             fund = Fund(spec, llm=self._llm)  # one immutable client for this run
-            persona_engine = PersonaSignalEngine(spec.persona_refresh)
+            persona_engine = PersonaSignalEngine(spec.persona_refresh, self._concurrency, self.observer)
             benchmark_base = benchmark_closes[days[0]]
             self._save_nav_snapshot(
                 get_session(self._db_path), days[0], self._capital,
@@ -467,10 +494,13 @@ class SimRunner:
             self._set_progress(1)
             for i, day in enumerate(days[1:], start=1):
                 signal_day = days[i - 1]
+                self.observer.phase("cycle_started", cycle_number=i,
+                                    signal_date=signal_day, execution_date=day)
                 opens, closes = self._prices_for_day(day)
                 try:
                     corporate_actions = self._apply_corporate_actions(broker, day, opens)
                     persona_engine.begin_cycle(i)
+                    self.observer.phase("signals")
                     record = run_cycle(
                         fund, signal_day, broker, data_client,
                         execution_prices=opens, valuation_prices=closes, execution_date=day,
@@ -502,6 +532,7 @@ class SimRunner:
                     self._capital * benchmark_closes[day] / benchmark_base
                 )
 
+                self.observer.phase("persisting")
                 persist_completed_cycle(
                     self._db_path, self._id, i, record, benchmark_nav,
                 )
@@ -512,10 +543,17 @@ class SimRunner:
                     )
                 broker._last_trades = []
                 self._set_progress(i + 1)
+                self.observer.phase("cycle_committed")
             self._finish(days)
+            self.observer.phase("completed")
         except Exception as exc:
             logger.exception("simulation %s failed", self._id)
-            self._fail(classify_cycle_failure(exc).message)
+            failure = classify_cycle_failure(exc)
+            self._fail(failure.message)
+            self.observer.emit("simulation_failed", category=failure.category, reason=failure.message)
+            self.observer.phase("failed")
+        finally:
+            self.observer.close()
 
     def _prices_for_day(self, day: str) -> tuple[dict[str, float], dict[str, float]]:
         with get_session(self._db_path) as session:
@@ -597,7 +635,7 @@ class SimRunner:
                 .order_by(SimNavSnapshot.cycle_date.desc())
                 .limit(1)
             ).scalar_one_or_none()
-            run2.final_nav = float(nav_row) if nav_row else self._capital
+            run2.final_nav = float(nav_row) if nav_row is not None else None
             run2.status = "completed"
             run2.current_day = len(days)
             run2.completed_at = datetime.now(timezone.utc).isoformat()
@@ -627,6 +665,12 @@ def get_sim_status(sim_id: int, db_path: str) -> dict | None:
             "id": run.id,
             "status": run.status,
             "current_day": run.current_day,
+            "activity": (SimRunner._get(sim_id).observer.snapshot()
+                         if SimRunner._get(sim_id) is not None
+                         and SimRunner._get(sim_id).observer is not None
+                         and Path(SimRunner._get(sim_id)._db_path).resolve() == Path(db_path).resolve()
+                         else {"available": False}),
+            "execution_config": json.loads(run.execution_config) if run.execution_config else None,
             "total_days": run.total_days,
             "final_nav": run.final_nav,
             "provider": run.llm_provider,
@@ -702,8 +746,9 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
         ]
 
         initial_nav = run.initial_capital
-        final_nav = run.final_nav or initial_nav
-        total_return = (final_nav - initial_nav) / initial_nav
+        final_nav = (run.final_nav if run.status == "completed" and run.final_nav is not None
+                     else nav_rows[-1].nav if nav_rows else None)
+        total_return = (final_nav - initial_nav) / initial_nav if final_nav is not None else None
         benchmark_values = [n.benchmark_nav for n in nav_rows]
         has_benchmark_curve = bool(benchmark_values) and all(
             value is not None for value in benchmark_values
@@ -714,7 +759,7 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
         )
         excess_return = (
             total_return - benchmark_return
-            if benchmark_return is not None else None
+            if benchmark_return is not None and total_return is not None else None
         )
 
         nav_values = [n.nav for n in nav_rows]
@@ -760,8 +805,10 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "llm_connection_id": run.llm_connection_id,
             "llm_connection_name": run.llm_connection_name,
             "llm_base_url": run.llm_base_url,
-            "final_nav": round(final_nav, 2),
-            "total_return_pct": round(total_return * 100, 2),
+            "final_nav": round(final_nav, 2) if final_nav is not None else None,
+            "valuation_date": nav_rows[-1].cycle_date if nav_rows else None,
+            "execution_config": json.loads(run.execution_config) if run.execution_config else None,
+            "total_return_pct": round(total_return * 100, 2) if total_return is not None else None,
             "benchmark_return_pct": (
                 round(benchmark_return * 100, 2)
                 if benchmark_return is not None else None
@@ -770,8 +817,8 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
                 round(excess_return * 100, 2)
                 if excess_return is not None else None
             ),
-            "max_drawdown_pct": round(max_drawdown * 100, 2),
-            "sharpe_ratio": round(sharpe, 4),
+            "max_drawdown_pct": round(max_drawdown * 100, 2) if nav_rows else None,
+            "sharpe_ratio": round(sharpe, 4) if nav_rows else None,
             "nav_curve": nav_curve,
             "trades": trades,
             "trade_count": len(trades),

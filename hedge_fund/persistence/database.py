@@ -54,6 +54,7 @@ def _migrate(engine) -> None:
             "llm_connection_name": "VARCHAR(100)",
             "llm_base_url": "VARCHAR(500)",
             "persona_refresh_policy": "TEXT",
+            "execution_config": "TEXT",
         },
         "sim_nav_snapshot": {
             "benchmark_nav": "FLOAT",

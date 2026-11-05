@@ -10,6 +10,21 @@ import httpx
 from hedge_fund.llm.base import AnthropicMessagesLLM, ChatLLM, LLMClient, ResponsesLLM
 from hedge_fund.llm.types import DiscoveredModel, LlmProtocol, LlmRuntimeConfig
 from hedge_fund.llm.vendors import VendorAdapter
+from hedge_fund.simulation.observation import http_request, http_response, http_failure
+
+
+class ObservedHTTPClient(httpx.Client):
+    """Record each transport failure, including attempts retried inside the SDK."""
+    def send(self, *args, **kwargs):
+        try:
+            return super().send(*args, **kwargs)
+        except httpx.TransportError as exc:
+            http_failure(exc)
+            raise
+
+
+def observed_http_client():
+    return ObservedHTTPClient(event_hooks={"request": [http_request], "response": [http_response]})
 
 
 class ProtocolAdapter(ABC):
@@ -62,6 +77,7 @@ class OpenAIChatCompletionsAdapter(OpenAICompatibleProtocolAdapter):
             "timeout": config.timeout,
             "max_retries": 1,
             "max_tokens": config.max_tokens,
+            "http_client": observed_http_client(),
         }
         headers = vendor.extra_headers(config.session_id)
         if headers:
@@ -86,6 +102,7 @@ class OpenAIResponsesAdapter(OpenAICompatibleProtocolAdapter):
             "base_url": config.base_url,
             "timeout": config.timeout,
             "max_retries": 1,
+            "http_client": observed_http_client(),
         }
         headers = vendor.extra_headers(config.session_id)
         if headers:

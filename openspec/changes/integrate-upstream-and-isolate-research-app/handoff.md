@@ -2,6 +2,17 @@
 
 ## Status
 
+### Post-integration provider storage relocation
+
+User stopped the backend and authorized relocation. SQLite backup API copied
+`app/backend/hedge_fund.db` to `~/.hedge-fund/research/providers.db` without
+overwriting a destination. Integrity and all table contents match (3 connections,
+41 models, and legacy tables preserved). The old database remains a backup,
+not an active synchronized copy. LLM_DB_PATH still overrides the new default.
+Fund DB and prompt cache were not relocated. `.vite/` is now ignored.
+Deletion of old app/src/v2 Python caches was blocked by execution policy; none
+were removed. Old node_modules and other residual files were left untouched.
+
 ### Current delivery: stages 1–3 complete
 
 - Authorized stage 1 checkpoint: `5b714d2`.

@@ -155,6 +155,7 @@ export interface FetchCacheResult {
 }
 
 export interface SimRunRequest {
+  llm_concurrency?: number;
   tickers: string[];
   benchmark?: string;
   start_date: string;
@@ -210,6 +211,8 @@ export interface PersonaRefreshPolicy {
 }
 
 export interface SimStatus {
+  activity?: SimActivity;
+  execution_config?: { llm_concurrency: number; preflight?: { estimated_llm_calls: number } } | null;
   id: number;
   status: 'pending' | 'running' | 'completed' | 'failed';
   current_day: number;
@@ -225,6 +228,20 @@ export interface SimStatus {
   llm_connection_id: number | null;
   llm_connection_name: string | null;
   llm_base_url: string | null;
+}
+
+export interface SimActivity {
+  available: boolean;
+  stage?: string;
+  signal_date?: string;
+  execution_date?: string;
+  concurrency?: number;
+  queued?: number;
+  updated_at?: string;
+  error?: string | null;
+  active?: { call_id: string; ticker: string; persona: string; stage?: string; elapsed_seconds: number }[];
+  counts?: Record<string, number>;
+  recent?: Record<string, unknown>[];
 }
 
 export interface SimNavPoint {
@@ -247,6 +264,7 @@ export interface SimTrade {
 }
 
 export interface SimResult {
+  valuation_date?: string | null;
   id: number;
   name: string;
   tickers: string[];
@@ -260,12 +278,12 @@ export interface SimResult {
   llm_connection_id: number | null;
   llm_connection_name: string | null;
   llm_base_url: string | null;
-  final_nav: number;
-  total_return_pct: number;
+  final_nav: number | null;
+  total_return_pct: number | null;
   benchmark_return_pct: number | null;
   excess_return_pct: number | null;
-  max_drawdown_pct: number;
-  sharpe_ratio: number;
+  max_drawdown_pct: number | null;
+  sharpe_ratio: number | null;
   nav_curve: SimNavPoint[];
   trades: SimTrade[];
   trade_count: number;

@@ -9,6 +9,7 @@ import { RefreshCw, Trash2 } from 'lucide-react';
 import { Fragment, useEffect, useState, useCallback } from 'react';
 import { SecurityBrowser } from './security-browser';
 import { CacheSecurityDetail } from './cache-security-detail';
+import type { DataIntent } from './simulation-workspace';
 
 const dateDaysAgo = (days: number) =>
   new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
@@ -16,7 +17,7 @@ const dateDaysAgo = (days: number) =>
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
-export function CachePanel() {
+export function CachePanel({ intent, onChanged }: { intent?: DataIntent; onChanged?: () => void }) {
   const [cacheItems, setCacheItems] = useState<CachedSecurityItem[]>([]);
   const [cacheTotal, setCacheTotal] = useState(0);
   const [cacheSearch, setCacheSearch] = useState('');
@@ -37,6 +38,16 @@ export function CachePanel() {
   const [includeMetrics, setIncludeMetrics] = useState(false);
   const [includeEarnings, setIncludeEarnings] = useState(false);
   const [job, setJob] = useState<CacheJob | null>(null);
+
+  useEffect(() => {
+    if (!intent) return;
+    setTickers(intent.tickers.join(','));
+    setSecurityIds([]);
+    setBenchmark(intent.benchmark);
+    if (intent.start) setStartDate(intent.start);
+    if (intent.end) setEndDate(intent.end);
+    setMessage('Selection copied from Simulation. Review the dates and data types, then start fetching when ready.');
+  }, [intent]);
 
   const loadCache = useCallback(async () => {
     setLoading(true);
@@ -67,6 +78,7 @@ export function CachePanel() {
           setFetching(false);
           setMessage(`Cache job ${next.status}: ${next.progress.completed} completed, ${next.progress.failed} failed.`);
           await loadCache();
+          onChanged?.();
         }
       } catch (error) {
         setFetching(false);
@@ -74,7 +86,7 @@ export function CachePanel() {
       }
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [job, loadCache]);
+  }, [job, loadCache, onChanged]);
 
   const handleFetch = async () => {
     const list = tickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
@@ -109,6 +121,7 @@ export function CachePanel() {
       if (expandedTicker === ticker) setExpandedTicker(null);
       setMessage(`Deleted ${ticker}`);
       await loadCache();
+      onChanged?.();
     } catch (error: unknown) {
       setMessage('Delete failed: ' + errorMessage(error));
     }
@@ -119,7 +132,7 @@ export function CachePanel() {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Fetch Historical Data</CardTitle>
+          <CardTitle>Acquire data</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <SecurityBrowser value={tickers} onChange={setTickers} onSecurityIdsChange={setSecurityIds} />
@@ -182,7 +195,7 @@ export function CachePanel() {
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Cached Data ({cacheTotal.toLocaleString()})</CardTitle>
+          <CardTitle>Cached inventory ({cacheTotal.toLocaleString()})</CardTitle>
           <Button variant="ghost" size="sm" onClick={loadCache} disabled={loading}>
             <RefreshCw className={cn('h-3 w-3', loading && 'animate-spin')} />
           </Button>

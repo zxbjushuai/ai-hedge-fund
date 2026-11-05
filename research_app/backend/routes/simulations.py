@@ -209,6 +209,10 @@ def sim_run(data: SimRunRequest):
             llm_connection_id=getattr(resolved, "connection_id", None),
             llm_connection_name=getattr(resolved, "connection_name", None),
             llm_base_url=getattr(resolved, "base_url", None),
+            llm_concurrency=data.llm_concurrency,
+            preflight_summary={key: preflight[key] for key in (
+                "estimated_llm_calls", "estimate_kind", "trading_days",
+            )},
         )
         runner = SimRunner._get(sim_id)
         if runner is None:

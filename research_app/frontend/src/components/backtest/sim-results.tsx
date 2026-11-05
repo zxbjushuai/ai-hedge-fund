@@ -77,14 +77,14 @@ export function SimResults({ result }: Props) {
         </Card>
       )}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <MetricCard label="Final NAV" value={`$${result.final_nav.toLocaleString()}`} />
+        <MetricCard label={result.status === 'completed' ? 'Final NAV' : 'Latest NAV'} value={result.final_nav == null ? '—' : `$${result.final_nav.toLocaleString()}`} />
         <MetricCard
           label="Total Return"
-          value={`${result.total_return_pct.toFixed(2)}%`}
-          positive={result.total_return_pct >= 0}
+          value={result.total_return_pct == null ? '—' : `${result.total_return_pct.toFixed(2)}%`}
+          positive={result.total_return_pct != null && result.total_return_pct >= 0}
         />
-        <MetricCard label="Max Drawdown" value={`${result.max_drawdown_pct.toFixed(2)}%`} />
-        <MetricCard label="Sharpe Ratio" value={result.sharpe_ratio.toFixed(2)} />
+        <MetricCard label="Max Drawdown" value={result.max_drawdown_pct == null ? '—' : `${result.max_drawdown_pct.toFixed(2)}%`} />
+        <MetricCard label="Sharpe Ratio" value={result.sharpe_ratio == null ? '—' : result.sharpe_ratio.toFixed(2)} />
         {result.benchmark_return_pct != null && (
           <MetricCard
             label={`${result.benchmark || 'Benchmark'} Return`}
@@ -95,12 +95,14 @@ export function SimResults({ result }: Props) {
         {result.excess_return_pct != null && (
           <MetricCard
             label="Excess Return"
-            value={`${result.excess_return_pct.toFixed(2)}%`}
+            value={`${result.excess_return_pct.toFixed(2)} pp`}
             positive={result.excess_return_pct >= 0}
           />
         )}
       </div>
 
+      <p className="quiet">{result.status === 'completed' ? 'Completed' : `Partial result (${result.status})`} · Valued through {result.valuation_date || result.nav_curve.at(-1)?.date || 'not yet valued'}. Benchmark shows the same initial capital invested at its adjusted-close return. Excess Return is fund return minus benchmark return, in percentage points. Max Drawdown measures the largest fall from a prior NAV peak; Sharpe is annualized daily mean return divided by volatility (zero risk-free rate).</p>
+      {result.error_message && <p role="alert" className="notice error">{result.error_message}</p>}
       {chart && (
         <Card>
           <CardHeader>
@@ -130,12 +132,12 @@ export function SimResults({ result }: Props) {
               <line x1={chart.margin.left} y1={chart.h - chart.margin.bottom}
                 x2={chart.w - chart.margin.right} y2={chart.h - chart.margin.bottom}
                 stroke="currentColor" strokeOpacity={0.25} />
-              {chart.xTicks.map(tick => (
+              {chart.xTicks.map((tick, index) => (
                 <g key={tick.date}>
                   <line x1={tick.x} y1={chart.h - chart.margin.bottom}
                     x2={tick.x} y2={chart.h - chart.margin.bottom + 5}
                     stroke="currentColor" strokeOpacity={0.3} />
-                  <text x={tick.x} y={chart.h - 18} textAnchor="middle"
+                  <text x={tick.x} y={chart.h - 18} textAnchor={index === chart.xTicks.length - 1 ? 'end' : index === 0 ? 'start' : 'middle'}
                     className="fill-muted-foreground text-[11px]">
                     {tick.date}
                   </text>

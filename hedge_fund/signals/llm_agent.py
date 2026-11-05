@@ -28,7 +28,8 @@ import hashlib
 import json
 
 from hedge_fund.data.protocol import DataClient
-from hedge_fund.failures import classify_llm_failure
+from hedge_fund.failures import classify_llm_failure, safe_remote_error_code
+from hedge_fund.simulation.observation import emit, HTTP_SLOTS, CURRENT_CALL
 from hedge_fund.features.snapshot import FundamentalsSnapshot, InsufficientData, build_snapshot
 from hedge_fund.llm import LLMClient, PromptCache, extract_json, make_llm, prompt_key
 from hedge_fund.models import Signal
@@ -90,12 +91,22 @@ class LLMAgent(AlphaModel):
 
         cached = self._cache.get(key)
         if cached is not None and "parsed" in cached:
+            emit("cache_hit")
             return self._to_signal(ticker, date, cached["parsed"], key, snapshot, cached=True)
 
         try:
-            response = self._llm.complete(system, user)
+            emit("waiting_for_slot")
+            with HTTP_SLOTS:
+                emit("request_started")
+                response = self._llm.complete(system, user)
+            emit("request_finished")
         except Exception as exc:
             failure = classify_llm_failure(exc)
+            context = CURRENT_CALL.get()
+            emit("request_failed", category=failure.category, reason=failure.message,
+                 http_status=getattr(exc, "status_code", None) or
+                 (context[1].get("last_http_status") if context else None),
+                 exception_type=type(exc).__name__, error_code=safe_remote_error_code(exc))
             logger.warning(
                 "%s LLM call failed for %s@%s (%s)",
                 self.name, ticker, date, failure.category,
@@ -120,10 +131,12 @@ class LLMAgent(AlphaModel):
         except Exception as exc:
             # Persist the raw response even when unparseable — the debug trail.
             self._cache.put(key, {**record, "parse_error": str(exc)})
-            logger.warning("%s parse failed for %s@%s: %s", self.name, ticker, date, exc)
+            emit("parse_failed", category="invalid_response", reason="LLM response could not be parsed as a valid signal")
+            logger.warning("%s parse failed for %s@%s", self.name, ticker, date)
             return self._failed_response(ticker, date)
 
         self._cache.put(key, {**record, "parsed": parsed})
+        emit("signal_parsed", value=self._to_signal(ticker, date, parsed, key, snapshot, cached=False).value)
         return self._to_signal(ticker, date, parsed, key, snapshot, cached=False)
 
     # ------------------------------------------------------------------

@@ -1,9 +1,32 @@
 # Research Web application
 
+Provider creation selects one of three protocols: OpenAI Chat Completions,
+OpenAI Responses or Anthropic Messages. For Sub2API, enter the relay API URL and
+its downstream API key. Legacy direct OpenCode Go connections remain supported
+by the backend but are hidden from the Web connection list and new-run choices.
+
+## Simulation progress and logs
+
+Review shows the call estimate and accepts **Model concurrency 1–8** (default 4).
+Confirm opens **Running**, showing current tickers/analysts, stages, elapsed time,
+HTTP attempts and failures. The server caps aggregate in-flight requests at 8 and
+does not prefetch future simulation dates. Higher concurrency can hit provider limits.
+
+Each new run writes UTF-8 JSON Lines to
+`<resolved FUND_DB_PATH parent>/logs/simulations/sim-{id}.log` (normally the root
+`logs/simulations` directory). These contain structured summaries, not prompts or
+raw responses. Existing prompt-cache storage is unchanged. After restart, live
+activity is unavailable; selecting an old run does not resume it. Partial results
+show Latest NAV and the last valued date rather than the initial investment.
+
+Restart the backend after updating code; its existing additive migration adds nullable
+`sim_run.execution_config` without resetting historical simulations.
+
 This entrypoint reuses the existing simulation, cache and connection management.
 The application now lives in `research_app/` and shares the `hedge_fund` core with
 the upstream CLI/TUI. Old `app/` source and `v2/` are retired. No daemon or Flow
-editor is required. The old provider database path remains valid and unchanged.
+editor is required. Provider storage defaults to the user directory; explicit
+LLM_DB_PATH overrides remain supported.
 
 From the repository root:
 
@@ -33,12 +56,16 @@ Relative paths are resolved against the repository root, not the shell directory
 | Variable | Default |
 | --- | --- |
 | FUND_DB_PATH | fund.db |
-| LLM_DB_PATH | app/backend/hedge_fund.db |
+| LLM_DB_PATH | ~/.hedge-fund/research/providers.db |
 | FUND_SPEC_PATH | hedge_fund/fund/example.yaml |
 | PROMPT_CACHE_DIR | .v2_cache/llm |
 
-These defaults deliberately retain existing storage. Nothing moves or deletes
-the original databases. For migration testing, override both database paths with
+Existing checkouts must copy the old `app/backend/hedge_fund.db` with SQLite's
+backup API before using the new default, or set LLM_DB_PATH to the old absolute
+path. Startup does not automatically move data. The local migration retained
+the old file as a backup; after switching, it is not updated by new runs.
+Fund and prompt-cache defaults are unchanged.
+For migration testing, override both database paths with
 disposable copies **before** starting the process. Do not test migration against
 the only copy of your data. Provider credentials must never be committed.
 

@@ -1,23 +1,38 @@
-import { useState } from 'react';
-import { SimulationPanel } from './components/backtest/simulation-panel';
+import { useCallback, useState } from 'react';
+import { useTheme } from 'next-themes';
+import { Activity, Database, PanelsTopLeft, Plug, Sun, Moon } from 'lucide-react';
+import { SimulationWorkspace, type DataIntent } from './components/backtest/simulation-workspace';
 import { CachePanel } from './components/backtest/cache-panel';
 import { LlmProvidersSettings } from './components/settings/llm-providers';
-import { Button } from './components/ui/button';
+import { cacheDetails } from './lib/cache-details';
 
 export default function App() {
   const [page, setPage] = useState('simulation');
-  return <div className="min-h-screen bg-background text-foreground">
-    <header className="border-b px-6 py-4">
-      <h1 className="mb-3 text-xl font-semibold">Research workspace</h1>
-      <nav className="flex gap-2" aria-label="Main navigation">
-        {Object.entries({ simulation: 'Simulation', data: 'Data', providers: 'Model providers' }).map(([id, label]) =>
-          <Button key={id} variant={page === id ? 'default' : 'outline'} onClick={() => setPage(id)}>{label}</Button>)}
-      </nav>
-    </header>
-    <main className="mx-auto max-w-screen-2xl p-6">
-      <div hidden={page !== 'simulation'}><SimulationPanel /></div>
-      <div hidden={page !== 'data'}><CachePanel /></div>
-      <div hidden={page !== 'providers'}><LlmProvidersSettings /></div>
+  const [visited, setVisited] = useState(new Set(['simulation']));
+  const [revision, setRevision] = useState(0);
+  const [intent, setIntent] = useState<DataIntent>();
+  const { resolvedTheme, setTheme } = useTheme();
+  const refresh = useCallback(() => { cacheDetails.invalidate(); setRevision(value => value + 1); }, []);
+  const navigate = (next: string) => {
+    if (next === 'simulation' && page === 'data') refresh();
+    setVisited(old => new Set([...old, next]));
+    setPage(next);
+  };
+  return <div className="research-shell">
+    <a className="skip-link" href="#workspace-main">Skip to content</a>
+    <aside className="workspace-nav">
+      <div className="brand"><PanelsTopLeft size={24} /><div>Research<span>Investment workspace</span></div></div>
+      <nav aria-label="Main navigation">{[
+        { id: 'simulation', label: 'Simulation', icon: Activity, detail: 'Run an experiment' },
+        { id: 'data', label: 'Data', icon: Database, detail: 'Prepare your inputs' },
+        { id: 'providers', label: 'Providers', icon: Plug, detail: 'Connect your models' },
+      ].map(({ id, label, icon: Icon, detail }) => <button key={id} aria-current={page === id ? 'page' : undefined} onClick={() => navigate(id)}><Icon size={19} /><span>{label}<small>{detail}</small></span></button>)}</nav>
+      <div className="nav-footer"><p>Local data. Explicit runs.</p><button onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}>{resolvedTheme === 'dark' ? <Sun size={17} /> : <Moon size={17} />} {resolvedTheme === 'dark' ? 'Light appearance' : 'Dark appearance'}</button></div>
+    </aside>
+    <main id="workspace-main" tabIndex={-1}>
+      <div hidden={page !== 'simulation'}><SimulationWorkspace active={page === 'simulation'} revision={revision} onRefresh={refresh} onProviders={() => navigate('providers')} onData={value => { setIntent(value); navigate('data'); }} /></div>
+      {visited.has('data') && <div hidden={page !== 'data'}><header className="page-heading"><div><h1>Data</h1><p>Acquire market history, then inspect what is ready to use.</p></div></header><CachePanel intent={intent} onChanged={refresh} /></div>}
+      {visited.has('providers') && <div hidden={page !== 'providers'}><header className="page-heading"><div><h1>Providers</h1><p>Manage independent connections and the models available to your runs.</p></div></header><LlmProvidersSettings /></div>}
     </main>
   </div>;
 }

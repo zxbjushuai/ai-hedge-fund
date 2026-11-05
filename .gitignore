@@ -80,4 +80,9 @@ scripts/release.sh
 node_modules/
 dist/
 *.tsbuildinfo
+.vite/
 research_app/backend/alembic/versions/__pycache__/
+
+# Agent runtime (local only)
+.venv/
+docs/agent-daily/

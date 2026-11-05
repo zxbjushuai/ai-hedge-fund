@@ -6,6 +6,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from collections.abc import Callable, Generator
 
 from hedge_fund.data.earnings import earnings_surprise_percent
 from hedge_fund.data.protocol import DataClient
@@ -34,30 +36,93 @@ class _PersonaState:
 class PersonaSignalEngine:
     """Materialize one effective persona signal per identity and cycle."""
 
-    def __init__(self, policy: PersonaRefreshPolicy) -> None:
+    def __init__(self, policy: PersonaRefreshPolicy, concurrency: int = 1, observer=None) -> None:
+        if type(concurrency) is not int or not 1 <= concurrency <= 8:
+            raise ValueError("concurrency must be an integer between 1 and 8")
+        self.concurrency = concurrency
+        self.observer = observer
         self.policy = policy
         self._states: dict[tuple[str, str, str, str], _PersonaState] = {}
         self._cycle_number = 0
         self._memo: dict[tuple[str, str, str, str], Signal] = {}
         self._events: list[PersonaEventRecord] = []
+        self._order = {}
 
     def begin_cycle(self, cycle_number: int) -> None:
         self._cycle_number = cycle_number
         self._memo = {}
         self._events = []
+        self._order = {}
 
     def finish_cycle(self) -> list[PersonaEventRecord]:
-        return list(self._events)
+        return sorted(self._events, key=lambda event: self._order[
+            (event.ticker, event.persona, event.model_identity, event.prompt_identity)])
 
     def predict(
+        self, agent, ticker, as_of, mark, data_client,
+    ) -> Signal:
+        generator = self._prepare(agent, ticker, as_of, mark, data_client)
+        try:
+            work = next(generator)
+        except StopIteration as done:
+            return done.value
+        try:
+            generator.send(work())
+        except StopIteration as done:
+            return done.value
+        raise RuntimeError("Unexpected second inference request")
+
+    def prepare_cycle(self, requests, data_client):
+        """Bounded preparation/inference; state transitions stay on this thread."""
+        seen = set()
+        pending = {}
+        ready = {}
+        submitted = next_apply = 0
+        def collect():
+            nonlocal next_apply
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                index, generator = pending.pop(future)
+                ready[index] = (generator, future.result())
+            while next_apply in ready:
+                generator, result = ready.pop(next_apply)
+                try:
+                    generator.send(result)
+                except StopIteration:
+                    pass
+                next_apply += 1
+            if self.observer:
+                self.observer.queue(len(pending))
+        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+            for agent, ticker, as_of, mark in requests:
+                key = (ticker, agent.name, agent.model_identity, agent.prompt_identity)
+                if key in seen:
+                    continue
+                seen.add(key)
+                generator = self._prepare(agent, ticker, as_of, mark, data_client)
+                try:
+                    work = next(generator)
+                except StopIteration:
+                    continue
+                pending[pool.submit(work)] = (submitted, generator)
+                submitted += 1
+                if self.observer:
+                    self.observer.queue(len(pending))
+                if len(pending) >= 2 * self.concurrency:
+                    collect()
+            while pending:
+                collect()
+
+    def _prepare(
         self,
         agent: LLMAgent,
         ticker: str,
         as_of: str,
         mark: float,
         data_client: DataClient,
-    ) -> Signal:
+    ) -> Generator[Callable[[], Signal], Signal, Signal]:
         key = (ticker, agent.name, agent.model_identity, agent.prompt_identity)
+        self._order.setdefault(key, len(self._order))
         if key in self._memo:
             return self._memo[key].model_copy(deep=True)
 
@@ -160,7 +225,13 @@ class PersonaSignalEngine:
                 if earnings_date else None
             ),
         }
-        attempted = agent.predict_snapshot(ticker, as_of, snapshot, context)
+        def infer():
+            if self.observer is None:
+                return agent.predict_snapshot(ticker, as_of, snapshot, context)
+            with self.observer.call(ticker=ticker, persona=agent.name,
+                                    model=agent.model_identity, trigger_reasons=reasons):
+                return agent.predict_snapshot(ticker, as_of, snapshot, context)
+        attempted = yield infer
         if attempted.status == "produced":
             attempted.metadata["persona_state"] = self._metadata(
                 "refreshed", reasons, as_of, 0, "produced", None,
@@ -345,4 +416,12 @@ class PersonaSignalEngine:
     ) -> Signal:
         self._memo[key] = signal.model_copy(deep=True)
         self._events.append(event)
+        if self.observer:
+            self.observer.emit("persona_result", ticker=key[0], persona=key[1],
+                               value=signal.value, status=signal.status,
+                               source_signal_date=event.source_signal_date, age_days=event.age_days,
+                               trigger_reasons=event.trigger_reasons,
+                               provenance=event.provenance, attempt_status=event.attempt_status,
+                               next_retry_cycle=event.next_retry_cycle,
+                               failure_category=event.failure.get("category") if event.failure else None)
         return signal

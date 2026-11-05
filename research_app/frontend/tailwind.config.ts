@@ -11,11 +11,11 @@ const config: Config = {
   theme: {
     fontFamily: {
       sans: [
-        'Inter',
+        'Segoe UI',
         'sans-serif'
       ],
       mono: [
-        'Inter',
+        'Segoe UI',
         'sans-serif'
       ]
     },

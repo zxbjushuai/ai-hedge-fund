@@ -2,6 +2,11 @@
 
 ## Purpose
 
+Latest delivery (2026-09-24): `observe-and-parallelize-simulations` provides structured
+run logs, configurable bounded same-day inference and a Running page. It preserves
+Workstreams 1–5 trading/data/event semantics; future-date parallelism and automatic
+resume remain outside scope. See its handoff for the regression record.
+
 This document is the durable context for follow-up implementation sessions. It records the project baseline, decisions that later changes must preserve, the ordered workstreams, and the boundaries between them. New sessions should read this file before the proposal, design, tasks, and handoff for the change they are implementing.
 
 The chat history is not a source of truth. If a later decision changes this roadmap, update this file and explain the change in the active change's `handoff.md`.

@@ -5,6 +5,28 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
+from hedge_fund.simulation.observation import emit, http_request, http_response
+
+
+class ResponseError(ValueError):
+    def __init__(self, category: str, status_code: int | None = None):
+        super().__init__("empty text response" if category == "empty_response" else category)
+        self.diagnostic_category = category
+        self.status_code = status_code
+
+
+def response_metadata(result):
+    metadata = getattr(result, "response_metadata", {}) or {}
+    reason = metadata.get("finish_reason") or getattr(result, "stop_reason", None)
+    incomplete = getattr(result, "incomplete_details", None)
+    reason = reason or getattr(incomplete, "reason", None)
+    usage = getattr(result, "usage_metadata", None) or getattr(result, "usage", None)
+    if hasattr(usage, "model_dump"):
+        usage = usage.model_dump()
+    safe_usage = {k: v for k, v in (usage or {}).items() if isinstance(v, (int, float))} if isinstance(usage, dict) else None
+    emit("response_metadata", finish_reason=reason if reason in {"stop", "length", "max_tokens", "max_output_tokens", "end_turn", "tool_calls", "content_filter"} else None, usage=safe_usage)
+    if reason in {"length", "max_tokens", "max_output_tokens"}:
+        raise ResponseError("truncated_response")
 
 
 @runtime_checkable
@@ -71,9 +93,10 @@ class ChatLLM:
 
     def complete(self, system: str, user: str) -> str:
         result = self._chat.invoke([("system", system), ("human", user)])
+        response_metadata(result)
         text = normalize_response_content(result.content)
         if not text.strip():
-            raise ValueError(f"{self.provider} returned an empty text response")
+            raise ResponseError("empty_response")
         return text
 
 
@@ -109,12 +132,9 @@ class ResponsesLLM:
             reasoning={"effort": self.reasoning_effort},
         )
         text = normalize_response_content(getattr(result, "output_text", ""))
+        response_metadata(result)
         if not text.strip():
-            status = getattr(result, "status", None)
-            details = getattr(result, "incomplete_details", None)
-            reason = getattr(details, "reason", None) if details is not None else None
-            suffix = f" ({status}: {reason})" if status or reason else ""
-            raise ValueError(f"{self.provider} returned an empty text response{suffix}")
+            raise ResponseError("empty_response")
         return text
 
 
@@ -165,6 +185,8 @@ class AnthropicMessagesLLM:
             "anthropic-version": "2023-06-01",
             **self.default_headers,
         }
+        request = httpx.Request("POST", url)
+        http_request(request)
         response = httpx.post(
             url,
             headers=headers,
@@ -177,21 +199,22 @@ class AnthropicMessagesLLM:
             timeout=self.timeout,
             follow_redirects=False,
         )
+        http_response(response)
         if 300 <= response.status_code < 400:
             raise ValueError("LLM endpoint redirect refused to protect the API key")
         if response.status_code >= 400:
-            raise ValueError(f"LLM endpoint returned HTTP {response.status_code}")
+            error = ResponseError("http_error", response.status_code)
+            error.response = response
+            raise error
         try:
             payload = response.json()
         except ValueError as exc:
-            raise ValueError("LLM endpoint returned an invalid response") from exc
+            raise ResponseError("invalid_response", response.status_code) from exc
         if not isinstance(payload, dict):
-            raise ValueError("LLM endpoint returned an invalid response")
+            raise ResponseError("invalid_response", response.status_code)
+        from types import SimpleNamespace
+        response_metadata(SimpleNamespace(stop_reason=payload.get("stop_reason"), usage=payload.get("usage")))
         text = normalize_response_content(payload.get("content"))
         if not text.strip():
-            stop_reason = payload.get("stop_reason")
-            suffix = f" ({stop_reason})" if stop_reason else ""
-            raise ValueError(
-                f"{self.provider} returned an empty text response{suffix}"
-            )
+            raise ResponseError("empty_response", response.status_code)
         return text

@@ -15,12 +15,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from hedge_fund.paths import CACHE_DIR
 
 DEFAULT_CACHE_DIR = CACHE_DIR / "llm"
+_CACHE_LOCK = threading.RLock()
 
 
 def prompt_key(agent: str, model_identity: str, system: str, user: str) -> str:
@@ -38,7 +40,8 @@ class PromptCache:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            with _CACHE_LOCK:
+                return json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             return None  # corrupt cache entry -> treat as miss, will be rewritten
 
@@ -46,4 +49,5 @@ class PromptCache:
         self._dir.mkdir(parents=True, exist_ok=True)
         record = {**record, "created_at": datetime.now(timezone.utc).isoformat()}
         path = self._dir / f"{key}.json"
-        path.write_text(json.dumps(record, indent=2))
+        with _CACHE_LOCK:
+            path.write_text(json.dumps(record, indent=2))

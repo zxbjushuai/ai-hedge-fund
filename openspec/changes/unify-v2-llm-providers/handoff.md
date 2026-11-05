@@ -1,5 +1,12 @@
 # Current Handoff
 
+## Web connection update — 2026-10-20
+
+The Web UI now offers only three API protocols. Direct OpenCode Go connections
+are hidden from Providers and new simulation selection; their backend adapters
+and stored data remain valid for legacy CLI/API access. See [relay handoff](relay-handoff.md)
+for behavior, validation and the Sub2API SSH-forwarding registration prerequisite.
+
 ## Status
 
 completed

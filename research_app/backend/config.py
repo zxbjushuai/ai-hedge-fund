@@ -24,7 +24,7 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         resolve_path("FUND_DB_PATH", "fund.db"),
-        resolve_path("LLM_DB_PATH", "app/backend/hedge_fund.db"),
+        resolve_path("LLM_DB_PATH", "~/.hedge-fund/research/providers.db"),
         resolve_path("FUND_SPEC_PATH", "hedge_fund/fund/example.yaml"),
         resolve_path("PROMPT_CACHE_DIR", ".v2_cache/llm"),
     )

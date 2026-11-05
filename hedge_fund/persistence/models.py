@@ -251,6 +251,7 @@ class SimRun(Base):
     warnings: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     models: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     persona_refresh_policy: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    execution_config: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[str] = mapped_column(
         String(26), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat()
     )

@@ -1,5 +1,14 @@
 # Current Handoff
 
+## Simulation observability update — 2026-09-24
+
+`observe-and-parallelize-simulations` adds per-run JSONL logs, bounded same-day model
+concurrency, a Running view and accurate partial NAV metrics. API concurrency defaults
+to 1 for compatibility; Review defaults to 4 (maximum 8). SQLite adds nullable
+`sim_run.execution_config`. See the child change handoff for acceptance and limitations.
+No commit/push or real model rerun was performed. sim10 completed; its excess return
+was -46.83 percentage points, not a -46.83% portfolio loss.
+
 ## Current migration state (supersedes historical notes below)
 
 Stages 1–3 implemented on `migration/upstream-web-isolation`. Stage 1 checkpoint

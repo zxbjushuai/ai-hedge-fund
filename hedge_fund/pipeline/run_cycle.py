@@ -99,6 +99,12 @@ def run_cycle(
         )
 
     tradeable = [t for t in effective_universe if t in marks]
+    if persona_engine is not None:
+        persona_engine.prepare_cycle(
+            ((model, ticker, as_of, marks[ticker])
+             for _, staff in fund.strategies for ticker in tradeable for model in staff
+             if isinstance(model, LLMAgent)), data_client,
+        )
 
     # Each strategy runs its own analysts and blends its own sleeve; the fund
     # nets the sleeves by capital slice. A persona staffed into two strategies
@@ -131,6 +137,8 @@ def run_cycle(
             weights=blend.weights,
         ))
 
+    if persona_engine is not None and persona_engine.observer:
+        persona_engine.observer.phase("portfolio")
     risk = apply_limits(netted, spec.risk)
 
     order_marks = marks if execution_prices is None else execution_prices
@@ -155,8 +163,12 @@ def run_cycle(
     orders = build_orders(
         executable_weights, executable_positions, order_marks, equity_before,
     )
+    if persona_engine is not None and persona_engine.observer:
+        persona_engine.observer.phase("execution")
     fills: list[Fill] = [broker.place_order(o, cycle_date=execution_date or as_of) for o in orders]
 
+    if persona_engine is not None and persona_engine.observer:
+        persona_engine.observer.phase("valuation")
     positions_after = {t: p.shares for t, p in broker.positions().items()}
     cash_after = broker.cash()
     nav_marks = marks if valuation_prices is None else valuation_prices
