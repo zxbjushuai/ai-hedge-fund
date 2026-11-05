@@ -175,7 +175,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(
             f"run {run.get('id')}: {run.get('status')} "
             f"{run.get('start_date')}..{run.get('end_date')} "
-            f"model={run.get('llm_model')} connection={run.get('llm_connection_name')}"
+            f"connection={run.get('llm_connection_name')}"
         )
     return 0
 
@@ -270,7 +270,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         lines.append(
             f"- run {sim_id} {run.get('status')} "
             f"{run.get('start_date')}..{run.get('end_date')} "
-            f"model={run.get('llm_model')} conn={run.get('llm_connection_name')} "
+            f"model={result.get('model')} conn={result.get('llm_connection_name')} "
             f"final_nav={result.get('final_nav')} "
             f"total={result.get('total_return_pct')}% "
             f"excess={result.get('excess_return_pct')}% "
