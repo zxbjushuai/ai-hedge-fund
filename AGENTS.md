@@ -48,6 +48,26 @@ npm --prefix research_app/frontend run build
 .venv/bin/flake8
 ```
 
+## On-demand simulation (agent)
+
+There is no scheduled data/simulation pipeline by design. The agent decides
+when to fetch data and run simulations:
+
+```bash
+.venv/bin/python scripts/aihf_ops.py status
+.venv/bin/python scripts/aihf_ops.py fetch --tickers AAPL,MSFT --days 30
+.venv/bin/python scripts/aihf_ops.py backtest --days 180
+.venv/bin/python scripts/aihf_ops.py simulate --start 2026-01-02 --end 2026-06-30
+.venv/bin/python scripts/aihf_ops.py cumulative --since 2026-01-02
+.venv/bin/python scripts/aihf_ops.py analyze --last 5
+```
+
+- `backtest` = historical range for strategy comparison and optimization.
+- `cumulative` = interim continuous window from a fixed start (recomputed).
+- `continue` / carried-book daily mode = backlog AIHF-016 (not implemented).
+- Results are saved under `logs/ops/`; the old `scripts/daily-pipeline.py` is a
+  manual rolling-window tool, not a timer.
+
 ## LLM configuration
 
 - Provider DB: `~/.hedge-fund/research/providers.db` (SQLite, plaintext keys,
@@ -74,7 +94,8 @@ npm --prefix research_app/frontend run build
   Never reset or delete it; use SQLite backup.
 - `.v2_cache/` (ignored): prompt cache. Keep it.
 - `logs/` (ignored): backend, simulation and agent logs.
-- Daily pipeline results: `logs/daily/`.
+- On-demand run results: `logs/ops/` (JSON + analysis Markdown).
+- Legacy rolling-window results: `logs/daily/`.
 - Agent daily reports: `docs/agent-daily/` (ignored; Chinese Markdown).
 - Agent backlog: `docs/agent/backlog.md` (tracked).
 - Universe list: `docs/agent/universe.txt` (tracked).
@@ -84,8 +105,10 @@ npm --prefix research_app/frontend run build
 - `scripts/agent-daily.sh` runs the autonomous loop: lock → backup → audit →
   Codex (full access) → tests → review → commit → report → optional push →
   health check/rollback.
-- `systemd` timers: `aihf-agent.timer` (Mon–Fri 09:00 Asia/Shanghai) and
-  `aihf-daily.timer` (Mon–Fri 06:30, data + simulation).
+- `aihf-agent.timer` runs the agent Mon–Fri 09:00 Asia/Shanghai.
+- There is no scheduled data/simulation timer; the agent uses
+  `scripts/aihf_ops.py` on demand. Do not recreate a fixed simulation timer
+  unless the user asks.
 - Full access is enabled at the user's request. Backups, tags, test gates and
   rollback are mandatory to compensate.
 - Only push `agent/daily` when `PUSH_ENABLED=1` in `agent.env`. Unless the user

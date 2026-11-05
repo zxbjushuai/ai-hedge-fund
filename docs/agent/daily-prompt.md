@@ -6,19 +6,31 @@ Start by loading and following these skills:
 
 - `using-superpowers`
 - `aihf-daily-workflow`
+- `aihf-simulation-ops`
 - `aihf-code-review`
 - `aihf-code-standards`
 - `aihf-daily-report`
 - the relevant `openspec-*` skill for non-trivial changes
+
+## On-demand simulation and analysis
+
+There is **no scheduled data/simulation pipeline** and no pre-run data handed to
+you. When a task needs evidence, use `scripts/aihf_ops.py` (skill
+`aihf-simulation-ops`): fetch data, run a historical backtest, run an ad-hoc or
+cumulative simulation, and analyze recent runs. Carried-book continuous mode is
+backlog AIHF-016; implement it when prioritized.
 
 Then:
 
 1. Read `AGENTS.md`, `docs/agent/backlog.md`, the latest `docs/agent-daily/*.md`,
    and the run context appended below.
 2. Run the audit described in `aihf-daily-workflow` (git state, service health,
-   latest simulation, TODO/FIXME, data freshness). Record findings.
+   `scripts/aihf_ops.py status` / `analyze --last 3`, TODO/FIXME, data
+   freshness). Record findings.
 3. Pick exactly one backlog item. Prefer the highest priority item that can be
-   finished and verified today. Do not start a second feature.
+   finished and verified today. Do not start a second feature. If the item is
+   strategy/performance related, run a baseline backtest before the change and
+   the same backtest after, and report both.
 4. Implement the change with tests. Keep the diff small and focused.
 5. Run the full verification suite:
    - `.venv/bin/python -m pytest research_app/backend hedge_fund -q`
@@ -31,6 +43,8 @@ Then:
    `.env`, `*.db`, `.v2_cache/`, `logs/`, `node_modules/`, or `.venv/`.
 8. Update `docs/agent/backlog.md` (status + date + commit; add new gaps).
 9. Write `docs/agent-daily/YYYY-MM-DD.md` in Chinese using `aihf-daily-report`.
+   Include simulation/backtest evidence if you ran any (run id, range, universe,
+   key metrics).
 10. Do not push unless `PUSH_ENABLED=1`. Never force-push or touch `main`/`zxb_dev`.
 11. If blocked, stop, write the blocker and evidence in the report, and do not
     make unrelated changes.

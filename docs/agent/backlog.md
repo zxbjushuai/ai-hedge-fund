@@ -3,17 +3,21 @@
 One item per day. Pick the highest-priority unfinished item that can be completed
 and verified in one run. Update status with the date and commit hash.
 
-## Current daily behavior
+## Current behavior
 
-The daily pipeline (`scripts/daily-pipeline.py`) runs an **independent**
-simulation over the last 14 days each day, starting from `initial_capital`.
-It does not carry cash/positions from the previous day's run. Continuous
-paper-trading is tracked by AIHF-016.
+- There is **no scheduled data/simulation timer**. The agent runs
+  `scripts/aihf_ops.py` on demand: `fetch`, `backtest`, `simulate`,
+  `cumulative`, `analyze`.
+- `backtest` = historical range for strategy optimization.
+- `cumulative` = interim continuous window from a fixed start (recomputed).
+- True carried-book daily paper trading is AIHF-016.
+- `scripts/daily-pipeline.py` is a legacy/manual rolling-window tool (independent
+  runs); it is not scheduled.
 
 ## P0 — daily pipeline and reliability
 
 ### AIHF-001 — Daily data + simulation pipeline
-Status: done (2026-11-05, `17b97a0`; verified with AAPL/MSFT/SPY, sim #12 direct and sim #13 via Sub2API)
+Status: done (2026-11-05, `17b97a0`; verified with AAPL/MSFT/SPY, sim #12 direct and sim #13 via Sub2API). Scheduled timer disabled by design; kept as a manual tool behind `scripts/aihf_ops.py`.
 Goal: implement `scripts/daily-pipeline.py` that syncs/pulls US prices for the
 configured universe, waits for the cache job, preflights, runs a simulation with
 `llm_connection_id=1` / `deepseek-v4.1-flash`, polls to completion, and writes
@@ -54,6 +58,14 @@ continuity tests; no lookahead; docs updated.
 Notes: ROADMAP "persistent ledger read half"; `nav_snapshot`,
 `position_snapshot`, `sim_*` tables already store state; `SimRunner` currently
 always creates a fresh `SimBroker`.
+
+### AIHF-017 — Backtest / optimization harness
+Status: open
+Goal: make historical backtests first-class: run a matrix of date ranges,
+universes, personas/risk settings, persist metrics, compare runs, and feed the
+best candidates into the agent's decisions. `scripts/aihf_ops.py
+backtest/analyze` is the starting point.
+Acceptance: reproducible command; metrics persisted; comparison report; tests.
 
 ### AIHF-005 — Provider bootstrap script
 Status: open
