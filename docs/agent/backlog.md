@@ -7,10 +7,10 @@ and verified in one run. Update status with the date and commit hash.
 
 - There is **no scheduled data/simulation timer**. The agent runs
   `scripts/aihf_ops.py` on demand: `fetch`, `backtest`, `simulate`,
-  `cumulative`, `analyze`.
+  `cumulative`, `continue`, `analyze`.
 - `backtest` = historical range for strategy optimization.
 - `cumulative` = interim continuous window from a fixed start (recomputed).
-- True carried-book daily paper trading is AIHF-016.
+- `continue` = carried-book daily paper trading from a completed parent run.
 - `scripts/daily-pipeline.py` is a legacy/manual rolling-window tool (independent
   runs); it is not scheduled.
 
@@ -48,7 +48,7 @@ Acceptance: tests run in CI/locally with `-m 'not live'`.
 ## P1 — correctness and operations
 
 ### AIHF-016 — Carried-book daily simulation (paper trading)
-Status: open
+Status: done (2026-11-05, `1173976`; verified run #15 → #16 carried AAPL/MSFT/SPY final cash and positions).
 Goal: make the daily run continue from the previous run instead of starting
 fresh. Seed the next run's broker with the prior run's closing cash/positions
 (including corporate actions), advance one trading day, and persist a
@@ -56,8 +56,10 @@ continuous NAV/position history.
 Acceptance: a multi-day chain of runs shows carried cash/positions; NAV
 continuity tests; no lookahead; docs updated.
 Notes: ROADMAP "persistent ledger read half"; `nav_snapshot`,
-`position_snapshot`, `sim_*` tables already store state; `SimRunner` currently
-always creates a fresh `SimBroker`.
+`position_snapshot`, and `sim_*` tables already stored state; the completed
+change seeds `SimBroker` only when `carried_from_run_id` is explicitly set.
+Follow-up: expose the chain in the Web UI (AIHF-018) and support resuming an
+interrupted run from its last committed cycle (AIHF-019).
 
 ### AIHF-017 — Backtest / optimization harness
 Status: open
@@ -121,6 +123,20 @@ Status: open
 Goal: define and implement eligibility when fewer than four quarters exist;
 avoid silent abstention surprises.
 Acceptance: docs + tests.
+
+### AIHF-018 — Carried-run chain UI
+Status: open
+Goal: expose `carried_from_run_id` in the Web simulation form, offer continuing
+a selected completed run, and show parent/child links in history.
+Acceptance: users can create and identify carried runs without the ops CLI;
+tests cover the form/preflight/result states.
+
+### AIHF-019 — Resume interrupted simulation
+Status: open
+Goal: resume an interrupted or orphaned run from its last committed cycle with
+its exact book, rather than only starting a child from a completed parent.
+Acceptance: restart-safe recovery with no duplicate trades or NAV points;
+tests cover resume after partial completion.
 
 ### AIHF-014 — Production frontend serving
 Status: open
