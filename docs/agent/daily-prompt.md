@@ -18,8 +18,7 @@ There is **no scheduled data/simulation pipeline** and no pre-run data handed to
 you. When a task needs evidence, use `scripts/aihf_ops.py` (skill
 `aihf-simulation-ops`): fetch data, run a historical backtest, run an ad-hoc or
 cumulative simulation, and analyze recent runs. Carried-book continuous mode is
-available through `scripts/aihf_ops.py continue --from-run <id> --end <date>`;
-use it for linked daily paper-trading runs.
+backlog AIHF-016; implement it when prioritized.
 
 If `docs/agent/priority.md` exists, treat it as a priority override for this run:
 do that item first. When it is complete, rename the file to
@@ -33,6 +32,14 @@ do that item first. When it is complete, rename the file to
 - At most 4 simulation/backtest runs per day; reuse results instead of rerunning.
 - You may improve `scripts/aihf_ops.py` and the backtest tooling (AIHF-017) as
   part of your work, with tests.
+
+## Privileged operations
+
+Full access does not grant root. If you need to restart the backend during the
+run, use `scripts/restart_services.sh` or
+`sudo -n systemctl restart aihf-backend`. Plain `systemctl restart` is denied by
+polkit. The wrapper restarts services and pushes once after you exit; do not
+start a temporary backend unless you need to test during the run.
 
 Then:
 
