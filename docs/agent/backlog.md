@@ -6,7 +6,7 @@ and verified in one run. Update status with the date and commit hash.
 ## P0 — daily pipeline and reliability
 
 ### AIHF-001 — Daily data + simulation pipeline
-Status: open
+Status: done (2026-11-05, `17b97a0`; verified with AAPL/MSFT/SPY, sim #12)
 Goal: implement `scripts/daily-pipeline.py` that syncs/pulls US prices for the
 configured universe, waits for the cache job, preflights, runs a simulation with
 `llm_connection_id=1` / `deepseek-v4.1-flash`, polls to completion, and writes
