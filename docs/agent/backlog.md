@@ -26,7 +26,7 @@ Acceptance: a manual end-to-end run succeeds; `aihf-daily.timer` enabled; failur
 exit non-zero and are visible in logs.
 
 ### AIHF-002 — Incremental cache updates
-Status: open
+Status: done (2026-11-06, a9479be; 343 tests)
 Goal: stop refetching the full requested range when only the end date changes.
 Fetch the gap since the last `actual_end` per ticker/kind and update coverage.
 Acceptance: two consecutive daily runs fetch only the new sessions; tests cover

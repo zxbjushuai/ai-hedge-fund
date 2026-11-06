@@ -7,7 +7,7 @@ import time
 import pandas as pd
 import pytest
 
-from hedge_fund.data.cache_service import persist_prices, sync_us_catalog
+from hedge_fund.data.cache_service import fetch_security_data, persist_prices, plan_price_fetch, sync_us_catalog
 from hedge_fund.data.cache_jobs import CacheJobManager
 from hedge_fund.data.market import CatalogSecurity, parse_nasdaq_catalog, yahoo_symbol
 from hedge_fund.data.models import Price
@@ -96,6 +96,118 @@ def test_persisted_price_has_raw_provenance_and_coverage(tmp_path: Path):
         assert row.adjusted_close == 10.25
 
 
+def _price(day: str, *, dividend: float = 0.0, split_ratio: float = 0.0) -> Price:
+    return Price(
+        open=10, high=11, low=9, close=10.5, adjusted_close=10.25,
+        volume=100, dividend=dividend, split_ratio=split_ratio,
+        source="yahoo", price_mode="raw", time=day,
+    )
+
+
+def test_second_price_request_fetches_only_new_sessions(tmp_path: Path):
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        def get_prices(self, ticker: str, start_date: str, end_date: str):
+            calls.append((start_date, end_date))
+            return [_price(day) for day in ("2024-01-02", "2024-01-03") if start_date <= day <= end_date]
+
+    db = str(tmp_path / "incremental.db")
+    adapter = Adapter()
+    first = fetch_security_data(db, "AAA", "2024-01-02", "2024-01-02", adapter=adapter)  # type: ignore[arg-type]
+    second = fetch_security_data(db, "AAA", "2024-01-02", "2024-01-03", adapter=adapter)  # type: ignore[arg-type]
+
+    assert first["prices"]["status"] == "complete"
+    assert second["prices"]["status"] == "complete"
+    assert second["prices"]["incremental"] is True
+    assert second["prices"]["fetch_start"] == "2024-01-03"
+    assert calls == [("2024-01-02", "2024-01-02"), ("2024-01-03", "2024-01-03")]
+
+
+def test_price_plan_supports_dates_before_default_calendar_bounds(tmp_path: Path):
+    plan = plan_price_fetch(str(tmp_path / "historical.db"), "AAA", "1990-01-02", "1990-01-03")
+    assert plan["status"] == "fetch"
+    assert plan["fetch_start"] == "1990-01-02"
+
+
+def test_incremental_request_refreshes_a_pre_close_session(tmp_path: Path, monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        def get_prices(self, ticker: str, start_date: str, end_date: str):
+            calls.append((start_date, end_date))
+            return [_price(day) for day in ("2024-01-02", "2024-01-03") if start_date <= day <= end_date]
+
+    db = str(tmp_path / "provisional.db")
+    adapter = Adapter()
+    monkeypatch.setattr("hedge_fund.data.cache_service._now", lambda: "2024-01-02T20:00:00+00:00")
+    fetch_security_data(db, "AAA", "2024-01-02", "2024-01-02", adapter=adapter)  # type: ignore[arg-type]
+    monkeypatch.setattr("hedge_fund.data.cache_service._now", lambda: "2024-01-03T22:00:00+00:00")
+    fetch_security_data(db, "AAA", "2024-01-02", "2024-01-03", adapter=adapter)  # type: ignore[arg-type]
+
+    assert calls == [("2024-01-02", "2024-01-02"), ("2024-01-02", "2024-01-03")]
+
+
+def test_extended_price_range_without_sessions_is_skipped(tmp_path: Path):
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        def get_prices(self, ticker: str, start_date: str, end_date: str):
+            calls.append((start_date, end_date))
+            return [_price("2024-01-05")]
+
+    db = str(tmp_path / "weekend.db")
+    adapter = Adapter()
+    fetch_security_data(db, "AAA", "2024-01-05", "2024-01-05", adapter=adapter)  # type: ignore[arg-type]
+    result = fetch_security_data(db, "AAA", "2024-01-05", "2024-01-07", adapter=adapter)  # type: ignore[arg-type]
+
+    assert result["prices"]["status"] == "skipped"
+    assert result["prices"]["reason"] == "no missing US trading sessions"
+    assert calls == [("2024-01-05", "2024-01-05")]
+
+
+def test_incremental_price_with_corporate_action_refreshes_full_range(tmp_path: Path):
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        def get_prices(self, ticker: str, start_date: str, end_date: str):
+            calls.append((start_date, end_date))
+            rows = [_price("2024-01-02"), _price("2024-01-03", split_ratio=2.0)]
+            return [row for row in rows if start_date <= row.time <= end_date]
+
+    db = str(tmp_path / "action.db")
+    adapter = Adapter()
+    fetch_security_data(db, "AAA", "2024-01-02", "2024-01-02", adapter=adapter)  # type: ignore[arg-type]
+    result = fetch_security_data(db, "AAA", "2024-01-02", "2024-01-03", adapter=adapter)  # type: ignore[arg-type]
+
+    assert result["prices"]["requested_start"] == "2024-01-02"
+    assert result["prices"]["incremental"] is False
+    assert result["prices"]["refreshed_for_corporate_action"] is True
+    assert calls == [
+        ("2024-01-02", "2024-01-02"),
+        ("2024-01-03", "2024-01-03"),
+        ("2024-01-02", "2024-01-03"),
+    ]
+    with get_session(db) as session:
+        assert [row.date for row in session.query(PriceCache).order_by(PriceCache.date).all()] == ["2024-01-02", "2024-01-03"]
+
+
+def test_forced_price_fetch_refreshes_full_range(tmp_path: Path):
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        def get_prices(self, ticker: str, start_date: str, end_date: str):
+            calls.append((start_date, end_date))
+            return [_price(day) for day in ("2024-01-02", "2024-01-03") if start_date <= day <= end_date]
+
+    db = str(tmp_path / "forced.db")
+    adapter = Adapter()
+    fetch_security_data(db, "AAA", "2024-01-02", "2024-01-03", adapter=adapter)  # type: ignore[arg-type]
+    fetch_security_data(db, "AAA", "2024-01-02", "2024-01-03", force=True, adapter=adapter)  # type: ignore[arg-type]
+
+    assert calls == [("2024-01-02", "2024-01-03"), ("2024-01-02", "2024-01-03")]
+
+
 def test_legacy_price_migration_does_not_claim_raw_provenance(tmp_path: Path):
     db = tmp_path / "legacy.db"
     connection = sqlite3.connect(db)
@@ -134,6 +246,50 @@ def test_cache_job_keeps_partial_success_and_exposes_retryable_item(tmp_path: Pa
         time.sleep(0.01)
     assert retried and retried["status"] == "partial"
     assert retried["items"]["BBB"]["prices"]["error_category"] == "timeout"
+
+
+def test_cache_job_batches_only_new_sessions(tmp_path: Path, monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_batch(self, tickers, start_date, end_date):
+        calls.append((start_date, end_date))
+        day = start_date
+        return {ticker: [_price(day)] for ticker in tickers}
+
+    monkeypatch.setattr("hedge_fund.data.cache_jobs.USMarketDataAdapter.get_prices_batch", fake_batch)
+    manager = CacheJobManager(str(tmp_path / "incremental-jobs.db"))
+
+    def finish(job):
+        for _ in range(200):
+            job = manager.get(job["id"])
+            if job and job["status"] not in {"pending", "running", "cancelling"}:
+                return job
+            time.sleep(0.01)
+        raise AssertionError("cache job did not finish")
+
+    first = finish(manager.create(["AAA"], "AAA", "2024-01-02", "2024-01-02", ["prices"]))
+    second = finish(manager.create(["AAA"], "AAA", "2024-01-02", "2024-01-03", ["prices"]))
+
+    assert first["status"] == "completed"
+    assert second["status"] == "completed"
+    assert calls == [("2024-01-02", "2024-01-02"), ("2024-01-03", "2024-01-03")]
+
+
+def test_cache_job_finalizes_when_planning_fails(tmp_path: Path, monkeypatch):
+    def fail_plan(*args, **kwargs):
+        raise ValueError("calendar unavailable")
+
+    monkeypatch.setattr("hedge_fund.data.cache_jobs.plan_price_fetch", fail_plan)
+    manager = CacheJobManager(str(tmp_path / "plan-failure.db"))
+    job = manager.create(["AAA"], "AAA", "2024-01-02", "2024-01-02", ["prices"])
+    for _ in range(200):
+        job = manager.get(job["id"])
+        if job and job["status"] not in {"pending", "running", "cancelling"}:
+            break
+        time.sleep(0.01)
+
+    assert job["status"] == "failed"
+    assert job["items"]["AAA"]["prices"]["error_category"] == "internal"
 
 
 @pytest.mark.live

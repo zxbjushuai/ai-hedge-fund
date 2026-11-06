@@ -138,6 +138,7 @@ def cache_fetch(data: CacheFetchRequest):
 def cache_list():
     """List all cached tickers with data ranges."""
     from sqlalchemy import func
+    from hedge_fund.data.cache_service import us_sessions
     from hedge_fund.persistence.models import CacheCoverage, EarningsCache, MetricsCache, PriceCache
 
     init_db(_DB_PATH)
@@ -171,12 +172,52 @@ def cache_list():
         price_map = {r.ticker: {"min": r.min_date, "max": r.max_date, "count": r.cnt, "price_modes": (r.price_modes or "legacy_unknown").split(",")} for r in price_rows}
         metrics_map = {r.ticker: {"min": r.min_period, "max": r.max_period, "count": r.cnt} for r in metrics_rows}
         earnings_map = {r[0]: {"min": r[1], "max": r[2], "count": r[3]} for r in earnings_rows}
-        coverage_map = {r.ticker: {
-            "status": r.status, "requested_start": r.requested_start,
-            "requested_end": r.requested_end, "actual_start": r.actual_start,
-            "actual_end": r.actual_end, "missing_sessions": r.missing_sessions,
-            "fetched_at": r.fetched_at,
-        } for r in coverage_rows}
+        coverage_by_ticker = {}
+        for row in coverage_rows:
+            coverage_by_ticker.setdefault(row.ticker, []).append(row)
+        exact_tickers = [
+            ticker for ticker, rows in coverage_by_ticker.items()
+            if any(row.status != "complete" for row in rows)
+        ]
+        exact_dates: dict[str, set[str]] = {}
+        for offset in range(0, len(exact_tickers), 500):
+            for ticker, session_date in session.query(PriceCache.ticker, PriceCache.date).filter(
+                PriceCache.ticker.in_(exact_tickers[offset:offset + 500]),
+            ).all():
+                exact_dates.setdefault(ticker, set()).add(session_date)
+        coverage_map = {}
+        for ticker, rows in coverage_by_ticker.items():
+            latest = rows[-1]
+            requested_start = min(row.requested_start for row in rows)
+            requested_end = max(row.requested_end for row in rows)
+            expected_sessions = set(us_sessions(requested_start, requested_end))
+            if ticker in exact_dates:
+                covered_sessions = exact_dates[ticker] & expected_sessions
+            else:
+                covered_sessions = set()
+                for row in rows:
+                    if row.status != "complete" or not row.actual_end:
+                        continue
+                    interval_start = min(row.requested_start, row.actual_start or row.requested_start)
+                    interval_end = row.actual_end
+                    if interval_start <= interval_end:
+                        covered_sessions.update(us_sessions(max(requested_start, interval_start), min(requested_end, interval_end)))
+            missing_sessions = len(expected_sessions - covered_sessions)
+            if expected_sessions and not missing_sessions:
+                status = "complete"
+            elif covered_sessions:
+                status = "partial"
+            else:
+                status = latest.status
+            actual_starts = [row.actual_start for row in rows if row.actual_start]
+            actual_ends = [row.actual_end for row in rows if row.actual_end]
+            coverage_map[ticker] = {
+                "status": status, "requested_start": requested_start,
+                "requested_end": requested_end,
+                "actual_start": min(actual_starts) if actual_starts else None,
+                "actual_end": max(actual_ends) if actual_ends else None,
+                "missing_sessions": missing_sessions, "fetched_at": latest.fetched_at,
+            }
 
         all_tickers = set(price_map) | set(metrics_map) | set(earnings_map)
         result = {}

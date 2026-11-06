@@ -8,8 +8,13 @@ from datetime import datetime, timezone
 from threading import Event, RLock
 from uuid import uuid4
 
-from hedge_fund.data.cache_service import coverage_is_fresh, fetch_security_data
-from hedge_fund.data.cache_service import persist_prices
+from hedge_fund.data.cache_service import (
+    annotate_price_result,
+    contains_corporate_action,
+    fetch_security_data,
+    persist_prices,
+    plan_price_fetch,
+)
 from hedge_fund.data.market import USMarketDataAdapter
 
 
@@ -99,34 +104,49 @@ class CacheJobManager:
         # Yahoo price history is fetched in batches. Missing batch members receive
         # bounded individual fallbacks so one bad symbol does not poison the batch.
         price_candidates = work if "prices" in requested_types else [benchmark]
-        price_work: list[str] = []
+        price_work: dict[str, dict] = {}
         for ticker in price_candidates:
-            if not force and coverage_is_fresh(self.db_path, ticker, "prices", start_date, end_date):
+            try:
+                plan = plan_price_fetch(self.db_path, ticker, start_date, end_date, force=force)
+            except Exception as exc:
+                with self._lock:
+                    self._jobs[job_id]["items"][ticker] = self._safe_result_from_error(ticker, exc)
+                continue
+            if plan["status"] == "skipped":
                 with self._lock:
                     self._jobs[job_id]["items"][ticker] = {
-                        "ticker": ticker, "prices": {"status": "skipped", "reason": "fresh complete coverage"}, "warnings": [],
+                        "ticker": ticker, "prices": {"status": "skipped", "reason": plan["reason"], "requested_start": start_date, "requested_end": end_date, "incremental": False}, "warnings": [],
                     }
             else:
-                price_work.append(ticker)
+                price_work[ticker] = plan
         fallback: list[str] = []
         adapter = USMarketDataAdapter()
-        for offset in range(0, len(price_work), 50):
-            if cancel.is_set():
-                break
-            chunk = price_work[offset:offset + 50]
-            try:
-                batch = adapter.get_prices_batch(chunk, start_date, end_date)
-            except Exception:
-                batch = {}
-            for ticker in chunk:
-                prices = batch.get(ticker, [])
-                if prices:
-                    detail = persist_prices(self.db_path, ticker, prices, start_date, end_date)
+        grouped: dict[str, list[str]] = {}
+        for ticker, plan in price_work.items():
+            grouped.setdefault(plan["fetch_start"], []).append(ticker)
+        for fetch_start, tickers in grouped.items():
+            for offset in range(0, len(tickers), 50):
+                if cancel.is_set():
+                    break
+                chunk = tickers[offset:offset + 50]
+                try:
+                    batch = adapter.get_prices_batch(chunk, fetch_start, end_date)
+                except Exception:
+                    batch = {}
+                for ticker in chunk:
+                    prices = batch.get(ticker, [])
+                    if not prices:
+                        fallback.append(ticker)
+                        continue
+                    plan = price_work[ticker]
+                    if fetch_start != start_date and contains_corporate_action(prices):
+                        detail = fetch_security_data(self.db_path, ticker, start_date, end_date, ["prices"], force=True)
+                    else:
+                        persisted = persist_prices(self.db_path, ticker, prices, fetch_start, end_date)
+                        detail = {"ticker": ticker, "prices": annotate_price_result(persisted, plan), "warnings": []}
                     with self._lock:
-                        self._jobs[job_id]["items"][ticker] = {"ticker": ticker, "prices": detail, "warnings": []}
-                else:
-                    fallback.append(ticker)
-            self._refresh_progress(job_id, work)
+                        self._jobs[job_id]["items"][ticker] = detail
+                self._refresh_progress(job_id, work)
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="cache-price") as pool:
             futures = {pool.submit(run_one, ticker, ["prices"]): ticker for ticker in fallback if not cancel.is_set()}
             for future in as_completed(futures):
@@ -201,7 +221,11 @@ class CacheJobManager:
         try:
             return future.result()
         except Exception as exc:
-            return {"ticker": ticker, "warnings": [], "prices": {"status": "failed", "error_category": "internal", "error": type(exc).__name__}}
+            return CacheJobManager._safe_result_from_error(ticker, exc)
+
+    @staticmethod
+    def _safe_result_from_error(ticker: str, exc: Exception) -> dict:
+        return {"ticker": ticker, "warnings": [], "prices": {"status": "failed", "error_category": "internal", "error": type(exc).__name__}}
 
 
 _managers: dict[str, CacheJobManager] = {}
