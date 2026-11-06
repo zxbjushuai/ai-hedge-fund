@@ -131,6 +131,11 @@ Codex full access does **not** grant Linux root. The agent runs as user
   pre-push hook blocks pushes unless the wrapper sets `AIHF_ALLOW_PUSH=1`.
 - **Commit management**: one or a few coherent commits per run; no commit spam,
   no amend, no force-push. Accumulate work and let the wrapper push once.
+  Commit incrementally before long operations so tested work survives provider
+  failures.
+- **Failure salvage**: if Codex exits nonzero (e.g. provider 429/timeout), the
+  wrapper keeps the WIP and runs the test gate. Passing work is salvaged and
+  committed; failing work is tagged `wip-*` and reverted.
 - **Resource limits**: at most 4 simulation/backtest runs per agent run; reuse
   results. The agent may improve `scripts/aihf_ops.py` and backtest tooling.
 - Full access is enabled at the user's request. Backups, tags, test gates and

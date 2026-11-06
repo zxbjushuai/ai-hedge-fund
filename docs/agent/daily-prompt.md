@@ -29,6 +29,9 @@ do that item first. When it is complete, rename the file to
 - Do **not** run `git push` yourself. The wrapper pushes at most once per day.
 - Keep commits coherent and few. Do not create dozens of tiny commits, amend,
   or force-push. Accumulate the day's work and let the wrapper push once.
+- Commit incrementally: put tested work into 1–3 logical commits before long
+  operations. If the provider returns 429/timeout, the wrapper will salvage
+  tested commits instead of discarding them.
 - At most 4 simulation/backtest runs per day; reuse results instead of rerunning.
 - You may improve `scripts/aihf_ops.py` and the backtest tooling (AIHF-017) as
   part of your work, with tests.

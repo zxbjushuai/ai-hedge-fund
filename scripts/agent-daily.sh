@@ -148,15 +148,17 @@ else
 fi
 echo "codex exit=$CODEX_RC"
 
+SALVAGED=0
 if [ "$CODEX_RC" != "0" ]; then
     if [ -n "$(git status --porcelain)" ]; then
         git add -A
         git commit -m "wip(agent): $DATE automated work (codex exit $CODEX_RC)" >/dev/null || true
         git tag -f "wip-$TS" HEAD >/dev/null || true
+    elif [ "$(git rev-list --count "$BASE_TAG"..HEAD)" != "0" ]; then
+        git tag -f "wip-$TS" HEAD >/dev/null || true
     fi
-    git reset --hard "$BASE_TAG" >/dev/null 2>&1 || true
-    write_failure_report "Codex 执行失败或超时 (exit $CODEX_RC)"
-    exit 1
+    SALVAGED=1
+    echo "codex failed with exit $CODEX_RC; keeping WIP and checking the gate"
 fi
 
 if git diff --name-only "$BASE_TAG" -- pyproject.toml poetry.lock | grep -q .; then
@@ -194,6 +196,16 @@ fi
 if [ -n "$(git status --porcelain)" ]; then
     git add -A
     git commit -m "chore(agent): daily update $DATE" >/dev/null || true
+fi
+
+if [ "$SALVAGED" = "1" ]; then
+    LAST_SUBJECT="$(git log -1 --format=%s)"
+    case "$LAST_SUBJECT" in
+        wip\(agent\)*)
+            git commit --amend -m "chore(agent): salvage tested work for $DATE after codex exit $CODEX_RC" >/dev/null || true
+            ;;
+    esac
+    echo "salvaged tested work after codex exit $CODEX_RC"
 fi
 
 COMMITS="$(git rev-list --count "$BASE_TAG"..HEAD)"
@@ -245,6 +257,7 @@ fi
     echo "- 分支: $BRANCH"
     echo "- 基线: $BASE_TAG"
     echo "- 提交: $(git log -1 --oneline)"
+    echo "- Codex exit: $CODEX_RC（非 0 时若门禁通过则 salvage）"
     echo "- 测试门禁: 通过（$GATE_LOG）"
     echo "- 审计: $AUDIT_LOG"
     echo "- Codex 日志: $CODEX_LOG"
