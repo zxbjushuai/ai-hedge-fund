@@ -120,7 +120,7 @@ Codex full access does **not** grant Linux root. The agent runs as user
 - `scripts/agent-daily.sh` runs the autonomous loop: lock → backup → audit →
   Codex (full access) → tests → review → commit → report → optional push →
   health check/rollback.
-- `aihf-agent.timer` runs the agent Mon–Fri 09:00 Asia/Shanghai.
+- `aihf-agent.timer` runs the agent daily 09:00 Asia/Shanghai (weekends included).
 - There is no scheduled data/simulation timer; the agent uses
   `scripts/aihf_ops.py` on demand. Do not recreate a fixed simulation timer
   unless the user asks.
