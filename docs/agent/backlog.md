@@ -13,6 +13,8 @@ and verified in one run. Update status with the date and commit hash.
 - `continue` = carried-book daily paper trading from a completed parent run.
 - `scripts/daily-pipeline.py` is a legacy/manual rolling-window tool (independent
   runs); it is not scheduled.
+- Backend startup fails stale `running` simulations and reports recovery/runtime
+  counts at `GET /dashboard/system/status`; cache jobs remain process-local.
 
 ## P0 — daily pipeline and reliability
 
@@ -33,11 +35,13 @@ Acceptance: two consecutive daily runs fetch only the new sessions; tests cover
 gap detection and no-data days.
 
 ### AIHF-003 — Stale run/job recovery
-Status: open
+Status: done (2026-11-08, `4f0148b`; backend 347 tests, frontend 28 tests + lint/build). Startup recovery fails orphaned running simulations, clears their runner registry entries, cancels process-local cache jobs, and exposes `/dashboard/system/status`.
 Goal: on backend startup, mark orphaned `sim_run.status='running'` rows as failed
 or resumable; restore or clean in-memory cache jobs. Add a status endpoint/field.
 Acceptance: restart during a run no longer leaves a permanently running row;
 tests cover recovery.
+Follow-up: pending rows created before the worker starts are tracked in AIHF-020;
+the Web UI does not yet consume the new status endpoint (AIHF-021).
 
 ### AIHF-004 — Tests for the daily path
 Status: open
@@ -149,3 +153,16 @@ Status: open
 Goal: daily check of `origin/main` (upstream) and a report of new commits and
 conflicts; never auto-merge into `agent/daily`.
 Acceptance: report section in the daily doc; manual merge workflow documented.
+
+### AIHF-020 — Recover pre-start pending simulations
+Status: open
+Goal: handle `sim_run.status='pending'` rows left by a crash after row creation
+but before the background runner starts.
+Acceptance: startup recovery fails or resumes pending rows safely; regression
+test covers the create-before-start crash window.
+
+### AIHF-021 — Surface runtime recovery in the Web UI
+Status: open
+Goal: display startup recovery counts and current running/failed simulation plus
+cache-job status from `/dashboard/system/status`.
+Acceptance: status is visible with loading/error states; frontend tests cover it.
