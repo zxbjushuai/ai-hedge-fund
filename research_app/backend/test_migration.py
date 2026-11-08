@@ -25,7 +25,7 @@ for _ in range(2):
         for path in ['/dashboard/securities', '/dashboard/universes',
                      '/dashboard/cache/list', '/dashboard/cache/jobs',
                      '/dashboard/llm/providers', '/dashboard/llm/options',
-                     '/dashboard/sim/runs']:
+                     '/dashboard/sim/runs', '/dashboard/system/status']:
             response = client.get(path)
             assert response.status_code == 200, (path, response.text)
         assert client.get('/flows').status_code == 404
@@ -34,7 +34,8 @@ for _ in range(2):
             assert client.get(removed).status_code == 404
         paths = client.get('/openapi.json').json()['paths']
         allowed = ('/dashboard/sim/', '/dashboard/cache/', '/dashboard/securities',
-                   '/dashboard/universes', '/dashboard/llm/providers', '/dashboard/llm/options')
+                   '/dashboard/universes', '/dashboard/llm/providers', '/dashboard/llm/options',
+                   '/dashboard/system/')
         assert all(path == '/health' or path.startswith(allowed) for path in paths)
 assert not any(name.startswith('app.backend') for name in sys.modules)
 assert 'hedge_fund.run_daemon' not in sys.modules

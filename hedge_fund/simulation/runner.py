@@ -459,6 +459,37 @@ class SimRunner:
         with _LOCK:
             return _RUNNERS.get(sim_id)
 
+    @classmethod
+    def recover_orphaned_runs(
+        cls,
+        db_path: str,
+        *,
+        recovered_at: datetime | None = None,
+    ) -> list[int]:
+        """Fail persisted runs that no process-local worker can still own."""
+        init_db(db_path)
+        stamp = (recovered_at or datetime.now(timezone.utc)).isoformat()
+        with get_session(db_path) as session:
+            runs = session.execute(
+                select(SimRun)
+                .where(SimRun.status == "running")
+                .order_by(SimRun.id)
+            ).scalars().all()
+            recovered_ids = [run.id for run in runs]
+            for run in runs:
+                run.status = "failed"
+                run.completed_at = stamp
+                run.error_message = (
+                    "Interrupted: backend restart recovered stale running state "
+                    f"at {stamp}; no active worker remains."
+                )[:4000]
+            if recovered_ids:
+                session.commit()
+        with _LOCK:
+            for sim_id in recovered_ids:
+                _RUNNERS.pop(sim_id, None)
+        return recovered_ids
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

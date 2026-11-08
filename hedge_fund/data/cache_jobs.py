@@ -88,6 +88,28 @@ class CacheJobManager:
             return None
         return self.create(failed, job["benchmark"], job["start_date"], job["end_date"], job["data_types"], True)
 
+    def recover_orphaned(self, *, recovered_at: datetime | None = None) -> list[str]:
+        """Fail active process-local jobs left behind by a previous lifecycle."""
+        stamp = (recovered_at or datetime.now(timezone.utc)).isoformat()
+        active = {"pending", "running", "cancelling"}
+        with self._lock:
+            recovered_ids = [
+                job_id for job_id, job in self._jobs.items()
+                if job.get("status") in active
+            ]
+            for job_id in recovered_ids:
+                job = self._jobs[job_id]
+                job["status"] = "failed"
+                job["completed_at"] = stamp
+                job["error_message"] = (
+                    "Interrupted: backend restart recovered stale cache job at "
+                    f"{stamp}."
+                )
+                cancel = self._cancel.get(job_id)
+                if cancel is not None:
+                    cancel.set()
+        return recovered_ids
+
     def _run(self, job_id: str, work: list[str]) -> None:
         with self._lock:
             job = self._jobs[job_id]
@@ -239,3 +261,11 @@ def get_cache_job_manager(db_path: str) -> CacheJobManager:
             manager = CacheJobManager(db_path)
             _managers[db_path] = manager
         return manager
+
+
+def recover_orphaned_cache_jobs(
+    db_path: str,
+    *,
+    recovered_at: datetime | None = None,
+) -> list[str]:
+    return get_cache_job_manager(db_path).recover_orphaned(recovered_at=recovered_at)
