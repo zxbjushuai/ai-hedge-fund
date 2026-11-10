@@ -38,6 +38,7 @@ set +a
 export PATH="/home/zxbjushuai/.local/bin:/usr/local/bin:/usr/bin:/bin"
 PUSH_ENABLED="${PUSH_ENABLED:-0}"
 DRY_RUN="${AIHF_AGENT_DRY_RUN:-0}"
+CODEX_PROFILE="${AIHF_CODEX_PROFILE:-opencode-go-sub2api}"
 
 REPORT="$REPO/docs/agent-daily/$DATE.md"
 write_failure_report() {
@@ -136,7 +137,7 @@ if [ "$DRY_RUN" = "1" ]; then
 else
     set +e
     timeout 10800 "$CODEX" exec \
-        -p opencode-go \
+        -p "$CODEX_PROFILE" \
         -C "$REPO" \
         --dangerously-bypass-approvals-and-sandbox \
         --ignore-rules \

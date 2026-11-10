@@ -99,9 +99,14 @@ Codex full access does **not** grant Linux root. The agent runs as user
   `deepseek-v4.1-flash`; use key 2 for Go models.
 - Key: `~/.config/ai-hedge-fund/agent.env` → `OPENCODE_API_KEY` (mode 600).
   Never print or commit it.
-- Codex CLI: provider `opencode-go` (Responses API) in `~/.codex/config.toml`;
-  profile `~/.codex/opencode-go.config.toml` uses `deepseek-v4.1-flash`.
-  It uses the direct OpenCode Go endpoint, not Sub2API.
+- Codex CLI daily agent: profile `opencode-go-sub2api` (provider
+  `sub2api-opencode`, base `http://127.0.0.1:18080/v1`, Responses API) uses the
+  Sub2API `opencode go` group and its separate key/quota. The direct
+  `opencode-go` profile remains as fallback. The daily profile uses a 256k
+  context window to limit quota usage.
+- History: the direct key hit `429 Too Many Requests` on 2026-11-06/07/09; the
+  daily agent now uses the Sub2API OpenCode Go key (`oc_sk_6c58ca…`) to avoid
+  that quota.
 
 ## Data and state
 
