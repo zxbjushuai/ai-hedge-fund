@@ -44,7 +44,7 @@ Follow-up: pending rows created before the worker starts are tracked in AIHF-020
 the Web UI does not yet consume the new status endpoint (AIHF-021).
 
 ### AIHF-004 — Tests for the daily path
-Status: open
+Status: done (2026-11-10, `108b3c3`; backend 348 tests, frontend 28 tests + lint/build). Adds a deterministic no-network integration test spanning catalog selection, cache-job prices, preflight, background simulation, status/result, benchmark NAV, trade isolation, and cycle audit persistence.
 Goal: deterministic tests for catalog → cache job → preflight → run → result,
 using fixtures/mocks (no network).
 Acceptance: tests run in CI/locally with `-m 'not live'`.

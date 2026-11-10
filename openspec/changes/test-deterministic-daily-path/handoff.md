@@ -10,4 +10,4 @@ audit persistence.
 The test passed three consecutive focused runs and the full verification suite:
 backend 348 passed, frontend 28 passed, ESLint clean, and Vite production build
 successful. No production code changed. Independent review found no actionable
-defects.
+defects. Committed as `108b3c3`.
