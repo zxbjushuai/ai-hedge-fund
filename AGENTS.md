@@ -59,10 +59,13 @@ when to fetch data and run simulations:
 .venv/bin/python scripts/aihf_ops.py backtest --days 180
 .venv/bin/python scripts/aihf_ops.py simulate --start 2026-01-02 --end 2026-06-30
 .venv/bin/python scripts/aihf_ops.py cumulative --since 2026-01-02
+.venv/bin/python scripts/aihf_ops.py matrix --spec docs/agent/backtest-matrix.example.json
 .venv/bin/python scripts/aihf_ops.py analyze --last 5
 ```
 
 - `backtest` = historical range for strategy comparison and optimization.
+- `matrix` = reproducible, sequential comparison across several date ranges or
+  universes from one JSON spec; outputs JSON plus a ranked Markdown report.
 - `cumulative` = interim continuous window from a fixed start (recomputed).
 - `continue` / carried-book daily mode = backlog AIHF-016 (not implemented).
 - Results are saved under `logs/ops/`; the old `scripts/daily-pipeline.py` is a
