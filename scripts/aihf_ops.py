@@ -20,7 +20,9 @@ import requests
 
 API = os.environ.get("AIHF_API", "http://127.0.0.1:8000")
 REPO = Path(__file__).resolve().parents[1]
-UNIVERSE = Path(os.environ.get("AIHF_UNIVERSE_FILE", str(REPO / "docs" / "agent" / "universe.txt")))
+UNIVERSE = Path(
+    os.environ.get("AIHF_UNIVERSE_FILE", str(REPO / "docs" / "agent" / "universe.txt"))
+)
 OUT_DIR = REPO / "logs" / "ops"
 BENCHMARK = os.environ.get("AIHF_BENCHMARK", "SPY")
 DEFAULT_CONNECTION = os.environ.get("AIHF_CONNECTION_NAME", "sub2api opencode go")
@@ -50,7 +52,9 @@ class SimulationSubmissionError(RuntimeError):
 def api(method: str, path: str, payload: dict | None = None) -> dict:
     response = requests.request(method, API + path, json=payload, timeout=60)
     if response.status_code >= 400:
-        raise RuntimeError(f"{method} {path} -> {response.status_code}: {response.text[:1000]}")
+        raise RuntimeError(
+            f"{method} {path} -> {response.status_code}: {response.text[:1000]}"
+        )
     return response.json()
 
 
@@ -58,7 +62,11 @@ def load_tickers(raw: str | None) -> list[str]:
     if raw:
         tickers = [item.strip().upper() for item in raw.split(",") if item.strip()]
     else:
-        tickers = [line.strip().upper() for line in UNIVERSE.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
+        tickers = [
+            line.strip().upper()
+            for line in UNIVERSE.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
     unique = list(dict.fromkeys(tickers))
     if not unique:
         raise SystemExit("no tickers")
@@ -220,7 +228,9 @@ def wait_cache(job_id: str) -> dict:
         status = job.get("status")
         progress = job.get("progress", {})
         print(
-            f"cache {job_id}: {status} " f"{progress.get('completed', 0)}/{progress.get('total', 0)} " f"failed={progress.get('failed', 0)}",
+            f"cache {job_id}: {status} "
+            f"{progress.get('completed', 0)}/{progress.get('total', 0)} "
+            f"failed={progress.get('failed', 0)}",
             flush=True,
         )
         if status in {"completed", "partial", "failed", "cancelled"}:
@@ -234,7 +244,8 @@ def wait_sim(sim_id: int) -> dict:
     while time.time() < deadline:
         status = api("GET", f"/dashboard/sim/status/{sim_id}")
         print(
-            f"sim {sim_id}: {status.get('status')} " f"day {status.get('current_day')}/{status.get('total_days')}",
+            f"sim {sim_id}: {status.get('status')} "
+            f"day {status.get('current_day')}/{status.get('total_days')}",
             flush=True,
         )
         if status.get("status") in {"completed", "failed"}:
@@ -300,7 +311,12 @@ def run_simulation(
     out.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
     print("saved", out, flush=True)
     if status.get("status") == "completed":
-        print(f"sim {sim_id} completed: final_nav={result.get('final_nav')} " f"total={result.get('total_return_pct')}% " f"excess={result.get('excess_return_pct')}% " f"maxdd={result.get('max_drawdown_pct')}%")
+        print(
+            f"sim {sim_id} completed: final_nav={result.get('final_nav')} "
+            f"total={result.get('total_return_pct')}% "
+            f"excess={result.get('excess_return_pct')}% "
+            f"maxdd={result.get('max_drawdown_pct')}%"
+        )
     else:
         print(
             f"sim {sim_id} {status.get('status')}: {status.get('error_message')}",
@@ -313,16 +329,28 @@ def cmd_status(args: argparse.Namespace) -> int:
     print("health:", api("GET", "/health"))
     providers = api("GET", "/dashboard/llm/providers").get("providers", [])
     for provider in providers:
-        print(f"provider {provider['id']}: {provider['name']} " f"vendor={provider.get('vendor')} protocol={provider.get('protocol')} " f"enabled={provider.get('enabled')} url={provider.get('base_url')}")
+        print(
+            f"provider {provider['id']}: {provider['name']} "
+            f"vendor={provider.get('vendor')} protocol={provider.get('protocol')} "
+            f"enabled={provider.get('enabled')} url={provider.get('base_url')}"
+        )
     runs = api("GET", "/dashboard/sim/runs").get("runs", [])
     for run in runs[:8]:
-        print(f"run {run.get('id')}: {run.get('status')} " f"{run.get('start_date')}..{run.get('end_date')} " f"connection={run.get('llm_connection_name')}")
+        print(
+            f"run {run.get('id')}: {run.get('status')} "
+            f"{run.get('start_date')}..{run.get('end_date')} "
+            f"connection={run.get('llm_connection_name')}"
+        )
     return 0
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
     tickers = load_tickers(args.tickers)
-    start = date.fromisoformat(args.start) if args.start else date.today() - timedelta(days=args.days)
+    start = (
+        date.fromisoformat(args.start)
+        if args.start
+        else date.today() - timedelta(days=args.days)
+    )
     end = date.fromisoformat(args.end) if args.end else date.today()
     data_types = [item.strip() for item in args.types.split(",") if item.strip()]
     job = api(
@@ -403,7 +431,15 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         except Exception as exc:
             lines.append(f"- run {sim_id}: result unavailable ({exc})")
             continue
-        lines.append(f"- run {sim_id} {run.get('status')} " f"{run.get('start_date')}..{run.get('end_date')} " f"model={result.get('model')} conn={result.get('llm_connection_name')} " f"final_nav={result.get('final_nav')} " f"total={result.get('total_return_pct')}% " f"excess={result.get('excess_return_pct')}% " f"maxdd={result.get('max_drawdown_pct')}%")
+        lines.append(
+            f"- run {sim_id} {run.get('status')} "
+            f"{run.get('start_date')}..{run.get('end_date')} "
+            f"model={result.get('model')} conn={result.get('llm_connection_name')} "
+            f"final_nav={result.get('final_nav')} "
+            f"total={result.get('total_return_pct')}% "
+            f"excess={result.get('excess_return_pct')}% "
+            f"maxdd={result.get('max_drawdown_pct')}%"
+        )
         print(lines[-1])
     out = OUT_DIR / f"analyze-{time.strftime('%Y%m%d-%H%M%S')}.md"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")

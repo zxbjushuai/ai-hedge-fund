@@ -66,12 +66,15 @@ Follow-up: expose the chain in the Web UI (AIHF-018) and support resuming an
 interrupted run from its last committed cycle (AIHF-019).
 
 ### AIHF-017 — Backtest / optimization harness
-Status: open
+Status: done (2026-11-10, `60354fe`; backend 366 tests, frontend 28 tests + lint/build). Adds a reproducible JSON matrix command with API-aligned validation, persisted per-run metrics, ranked Markdown comparison, and safe stop behavior for ambiguous submission or lost monitoring.
 Goal: make historical backtests first-class: run a matrix of date ranges,
 universes, personas/risk settings, persist metrics, compare runs, and feed the
 best candidates into the agent's decisions. `scripts/aihf_ops.py
 backtest/analyze` is the starting point.
 Acceptance: reproducible command; metrics persisted; comparison report; tests.
+Follow-up: persona/risk axes still require per-run simulation API support; the
+current matrix varies dates, universes, connection/model, capital, concurrency,
+and benchmark.
 
 ### AIHF-005 — Provider bootstrap script
 Status: open
