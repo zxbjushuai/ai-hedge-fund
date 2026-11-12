@@ -77,7 +77,7 @@ current matrix varies dates, universes, connection/model, capital, concurrency,
 and benchmark.
 
 ### AIHF-005 — Provider bootstrap script
-Status: open
+Status: done (2026-11-12, `8aec3bc`; backend 375 tests, frontend 28 tests + lint/build). Adds `scripts/bootstrap_llm_provider.py`, an idempotent API-backed create/update/rotate flow that reads secrets only from env or env files, re-syncs remote models invalidated by credential changes, and verifies `/dashboard/llm/options`; includes a fresh isolated `providers.db` integration test and key-rotation runbook.
 Goal: idempotent script/API flow to create/update the `opencode_go` connection
 and `deepseek-v4.1-flash` model without manual DB edits; document key rotation.
 Acceptance: running it on a fresh `providers.db` yields a usable connection.
