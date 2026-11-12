@@ -102,6 +102,10 @@ Codex full access does **not** grant Linux root. The agent runs as user
   `deepseek-v4.1-flash`; use key 2 for Go models.
 - Key: `~/.config/ai-hedge-fund/agent.env` → `OPENCODE_API_KEY` (mode 600).
   Never print or commit it.
+- Bootstrap or rotate a managed connection through the API:
+  `.venv/bin/python scripts/bootstrap_llm_provider.py --api-key-file ~/.config/ai-hedge-fund/agent.env`.
+  The script is idempotent, never accepts a key argument, and verifies
+  `/dashboard/llm/options`; see `docs/agent/provider-bootstrap.md`.
 - Codex CLI daily agent: profile `opencode-go-sub2api` (provider
   `sub2api-opencode`, base `http://127.0.0.1:18080/v1`, Responses API) uses the
   Sub2API `opencode go` group and its separate key/quota. The direct
