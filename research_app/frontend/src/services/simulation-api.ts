@@ -215,7 +215,7 @@ export interface SimStatus {
   activity?: SimActivity;
   execution_config?: { llm_concurrency: number; preflight?: { estimated_llm_calls: number } } | null;
   id: number;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
   current_day: number;
   total_days: number;
   final_nav: number | null;
@@ -293,7 +293,7 @@ export interface SimResult {
   buy_count: number;
   sell_count: number;
   total_days: number;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
   error_message?: string | null;
   completed_at?: string | null;
   warnings?: string[];
@@ -578,6 +578,12 @@ export const simulationApi = {
 
   async getSimStatus(simId: number): Promise<SimStatus> {
     const res = await fetch(`${API_BASE_URL}/dashboard/sim/status/${simId}`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async cancelSim(simId: number): Promise<SimStatus> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/sim/${simId}/cancel`, { method: 'POST' });
     await requireOk(res);
     return res.json();
   },

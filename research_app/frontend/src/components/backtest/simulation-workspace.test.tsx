@@ -59,6 +59,27 @@ it('restores a saved run without submitting and shows concurrent tasks', async (
   expect(simulationApi.getSimStatus).toHaveBeenCalledWith(42);
   expect(simulationApi.runSim).not.toHaveBeenCalled();
 });
+
+it('cancels an active run and shows the cooperative cancelling state', async () => {
+  localStorage.setItem('simulation.activeRun', '42');
+  vi.mocked(simulationApi.getSimStatus).mockResolvedValue({
+    id: 42, status: 'running', current_day: 1, total_days: 10, final_nav: null,
+    provider: 'test', protocol: null, model: 'small', llm_connection_id: 12,
+    llm_connection_name: 'Test', llm_base_url: null,
+  });
+  vi.spyOn(simulationApi, 'cancelSim').mockResolvedValue({
+    id: 42, status: 'cancelling', current_day: 1, total_days: 10, final_nav: null,
+    provider: 'test', protocol: null, model: 'small', llm_connection_id: 12,
+    llm_connection_name: 'Test', llm_base_url: null,
+  });
+  render(<SimulationWorkspace {...props()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Running' }));
+  await screen.findByText('Simulation #42: running');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel run' }));
+  await waitFor(() => expect(simulationApi.cancelSim).toHaveBeenCalledWith(42));
+  await screen.findByText('Simulation #42: cancelling');
+  expect((screen.getByRole('button', { name: 'Cancelling…' }) as HTMLButtonElement).disabled).toBe(true);
+});
 async function configure() {
   fireEvent.click(await screen.findByLabelText('Select AAPL'));
   await waitFor(() => expect((screen.getByLabelText('Start date') as HTMLInputElement).value).toBe(days[0]));

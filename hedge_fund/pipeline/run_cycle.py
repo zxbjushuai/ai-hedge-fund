@@ -31,6 +31,7 @@ from __future__ import annotations
 from datetime import date as _date
 from datetime import timedelta
 import math
+from threading import Event
 from typing import TYPE_CHECKING
 
 from hedge_fund.brokers.models import Fill
@@ -42,6 +43,7 @@ from hedge_fund.pipeline.execution import build_orders
 from hedge_fund.pipeline.models import CycleRecord, StrategyRecord, TickerSkip
 from hedge_fund.portfolio.construction import blend_signals
 from hedge_fund.risk.limits import apply_limits
+from hedge_fund.simulation.cancellation import SimulationCancelled
 from hedge_fund.signals import LLMAgent
 
 if TYPE_CHECKING:
@@ -63,6 +65,7 @@ def run_cycle(
     execution_date: str | None = None,
     persona_engine: PersonaSignalEngine | None = None,
     sizing_split_ratios: dict[str, float] | None = None,
+    cancel_event: Event | None = None,
 ) -> CycleRecord:
     """Run one tick of *fund* over *universe* as of *as_of* (YYYY-MM-DD).
 
@@ -70,6 +73,7 @@ def run_cycle(
     strategies, staff, risk, capital — and can be pointed at any names. What
     it was asked to trade this tick is recorded on the returned CycleRecord.
     """
+    _check_cancel(cancel_event)
     spec = fund.spec
     effective_universe = normalize_universe(
         universe if universe is not None else (spec.universe or [])
@@ -113,6 +117,7 @@ def run_cycle(
     strategy_records: list[StrategyRecord] = []
     netted: dict[str, float] = {t: 0.0 for t in tradeable}
     for strategy, staff in fund.strategies:
+        _check_cancel(cancel_event)
         signals: list[Signal] = []
         for ticker in tradeable:
             for model in staff:
@@ -137,6 +142,7 @@ def run_cycle(
             weights=blend.weights,
         ))
 
+    _check_cancel(cancel_event)
     if persona_engine is not None and persona_engine.observer:
         persona_engine.observer.phase("portfolio")
     risk = apply_limits(netted, spec.risk)
@@ -163,9 +169,11 @@ def run_cycle(
     orders = build_orders(
         executable_weights, executable_positions, order_marks, equity_before,
     )
+    _check_cancel(cancel_event)
     if persona_engine is not None and persona_engine.observer:
         persona_engine.observer.phase("execution")
     fills: list[Fill] = [broker.place_order(o, cycle_date=execution_date or as_of) for o in orders]
+    _check_cancel(cancel_event)
 
     if persona_engine is not None and persona_engine.observer:
         persona_engine.observer.phase("valuation")
@@ -239,3 +247,8 @@ def _mark_prices(
             ))
 
     return marks, skipped
+
+
+def _check_cancel(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise SimulationCancelled("simulation cancelled by user")

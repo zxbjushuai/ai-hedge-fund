@@ -19,6 +19,7 @@ from hedge_fund.persistence.models import MetricsCache, PriceCache, SimCorporate
 from hedge_fund.pipeline.models import CycleRecord
 from hedge_fund.signals import BuffettAgent
 from hedge_fund.simulation.audit import persist_completed_cycle
+from hedge_fund.simulation.cancellation import SimulationCancelled
 from hedge_fund.simulation.persona_state import PersonaSignalEngine
 from hedge_fund.simulation.runner import estimate_persona_event_schedule
 
@@ -44,6 +45,18 @@ class SequenceLlm:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+
+class BlockingLlm(SequenceLlm):
+    def __init__(self, started: threading.Event, release: threading.Event):
+        super().__init__([RESPONSE, RESPONSE, RESPONSE])
+        self.started = started
+        self.release = release
+
+    def complete(self, system, user):
+        self.started.set()
+        assert self.release.wait(timeout=5)
+        return super().complete(system, user)
 
 
 class AuthError(Exception):
@@ -218,6 +231,34 @@ def test_data_infrastructure_failure_propagates(tmp_path):
     engine.begin_cycle(1)
     with pytest.raises(ConnectionError, match="database unavailable"):
         engine.predict(agent, "AAPL", "2024-01-02", 100, BrokenData())
+
+
+def test_cancellation_stops_queued_persona_work_before_provider_call(tmp_path):
+    started, release = threading.Event(), threading.Event()
+    llm = BlockingLlm(started, release)
+    cancel_event = threading.Event()
+    engine = PersonaSignalEngine(
+        PersonaRefreshPolicy(), concurrency=1, cancel_event=cancel_event,
+    )
+    agent = _agent(tmp_path, llm)
+    requests = [
+        (agent, ticker, "2024-01-02", 100)
+        for ticker in ("AAPL", "MSFT", "NVDA")
+    ]
+
+    def stop():
+        started.wait(timeout=5)
+        cancel_event.set()
+        release.set()
+
+    trigger = threading.Thread(target=stop)
+    trigger.start()
+    with pytest.raises(SimulationCancelled):
+        engine.prepare_cycle(requests, EventData())
+    trigger.join(timeout=5)
+
+    assert not trigger.is_alive()
+    assert llm.calls == 1
 
 
 def test_non_retryable_failure_waits_for_new_event(tmp_path):

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from collections.abc import Callable, Generator
+from threading import Event
 
 from hedge_fund.data.earnings import earnings_surprise_percent
 from hedge_fund.data.protocol import DataClient
@@ -15,6 +16,7 @@ from hedge_fund.features.snapshot import InsufficientData
 from hedge_fund.fund import PersonaRefreshPolicy
 from hedge_fund.models import FailureDetail, Signal
 from hedge_fund.pipeline.models import PersonaEventRecord
+from hedge_fund.simulation.cancellation import SimulationCancelled
 from hedge_fund.signals.llm_agent import LLMAgent
 
 
@@ -36,11 +38,18 @@ class _PersonaState:
 class PersonaSignalEngine:
     """Materialize one effective persona signal per identity and cycle."""
 
-    def __init__(self, policy: PersonaRefreshPolicy, concurrency: int = 1, observer=None) -> None:
+    def __init__(
+        self,
+        policy: PersonaRefreshPolicy,
+        concurrency: int = 1,
+        observer=None,
+        cancel_event: Event | None = None,
+    ) -> None:
         if type(concurrency) is not int or not 1 <= concurrency <= 8:
             raise ValueError("concurrency must be an integer between 1 and 8")
         self.concurrency = concurrency
         self.observer = observer
+        self.cancel_event = cancel_event
         self.policy = policy
         self._states: dict[tuple[str, str, str, str], _PersonaState] = {}
         self._cycle_number = 0
@@ -49,6 +58,7 @@ class PersonaSignalEngine:
         self._order = {}
 
     def begin_cycle(self, cycle_number: int) -> None:
+        self._check_cancel()
         self._cycle_number = cycle_number
         self._memo = {}
         self._events = []
@@ -61,6 +71,7 @@ class PersonaSignalEngine:
     def predict(
         self, agent, ticker, as_of, mark, data_client,
     ) -> Signal:
+        self._check_cancel()
         generator = self._prepare(agent, ticker, as_of, mark, data_client)
         try:
             work = next(generator)
@@ -74,13 +85,16 @@ class PersonaSignalEngine:
 
     def prepare_cycle(self, requests, data_client):
         """Bounded preparation/inference; state transitions stay on this thread."""
+        self._check_cancel()
         seen = set()
         pending = {}
         ready = {}
         submitted = next_apply = 0
+        cancelled = False
         def collect():
             nonlocal next_apply
             completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            self._check_cancel()
             for future in completed:
                 index, generator = pending.pop(future)
                 ready[index] = (generator, future.result())
@@ -93,8 +107,10 @@ class PersonaSignalEngine:
                 next_apply += 1
             if self.observer:
                 self.observer.queue(len(pending))
-        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+        pool = ThreadPoolExecutor(max_workers=self.concurrency)
+        try:
             for agent, ticker, as_of, mark in requests:
+                self._check_cancel()
                 key = (ticker, agent.name, agent.model_identity, agent.prompt_identity)
                 if key in seen:
                     continue
@@ -104,7 +120,7 @@ class PersonaSignalEngine:
                     work = next(generator)
                 except StopIteration:
                     continue
-                pending[pool.submit(work)] = (submitted, generator)
+                pending[pool.submit(self._run_work, work)] = (submitted, generator)
                 submitted += 1
                 if self.observer:
                     self.observer.queue(len(pending))
@@ -112,6 +128,21 @@ class PersonaSignalEngine:
                     collect()
             while pending:
                 collect()
+        except SimulationCancelled:
+            cancelled = True
+            for future in pending:
+                future.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=True, cancel_futures=cancelled)
+
+    def _run_work(self, work):
+        self._check_cancel()
+        return work()
+
+    def _check_cancel(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise SimulationCancelled("simulation cancelled by user")
 
     def _prepare(
         self,

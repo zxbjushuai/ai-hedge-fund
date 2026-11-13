@@ -48,6 +48,7 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   });
   const [pollError, setPollError] = useState('');
   const [pollRevision, setPollRevision] = useState(0);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [runs, setRuns] = useState<SimRunSummary[]>([]);
   const [historyError, setHistoryError] = useState('');
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -67,7 +68,7 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   const latestKey = useRef(configKey);
   latestKey.current = configKey;
   const analysis = useMemo(() => analyzeCoverage(tickers, benchmark, details, { start, end }), [tickers, benchmark, details, start, end]);
-  const running = !!run && (!run.status || ['pending', 'running'].includes(run.status.status));
+  const running = !!run && (!run.status || ['pending', 'running', 'cancelling'].includes(run.status.status));
   const locked = running || busy;
 
   useEffect(() => { setReview(null); setAcknowledged(false); setError(''); }, [configKey]);
@@ -121,8 +122,12 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
       try {
         const status = await simulationApi.getSimStatus(runId!);
         if (!current) return;
-        setRun({ id: runId!, status }); setPollError('');
-        if (status.status === 'completed' || status.status === 'failed') { setHistoryRevision(value => value + 1); return; }
+        setRun(previous => {
+          const cancelling = previous !== null && previous.id === runId && previous.status?.status === 'cancelling';
+          if (cancelling && ['pending', 'running'].includes(status.status)) return previous;
+          return { id: runId!, status };
+        }); setPollError('');
+        if (['completed', 'failed', 'cancelled'].includes(status.status)) { setHistoryRevision(value => value + 1); return; }
         timer = setTimeout(poll, 2000);
       } catch (err) { if (current) setPollError(message(err)); }
     }
@@ -157,6 +162,18 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
     catch (err) { setError(`${message(err)} If the connection was lost, check History before submitting again; the server may have accepted the run.`); setReview(null); setHistoryRevision(value => value + 1); }
     finally { requestLock.current = false; setBusy(false); }
   }
+  async function cancelRun(id: number) {
+    if (cancelBusy) return;
+    setCancelBusy(true); setPollError(''); setHistoryError('');
+    try {
+      const status = await simulationApi.cancelSim(id);
+      setHistoryRevision(value => value + 1);
+      if (runId === id) { setRun({ id, status }); setPollRevision(value => value + 1); }
+    } catch (err) {
+      const text = `Cancel failed: ${message(err)}`;
+      setPollError(text); setHistoryError(text); setHistoryRevision(value => value + 1);
+    } finally { setCancelBusy(false); }
+  }
   useEffect(() => {
     const heading = tab === 'running' ? runningHeading.current : review ? reviewHeading.current : null;
     if (heading) {
@@ -171,7 +188,7 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   const benchmarkDays = benchmarkDates(details[benchmark]);
   return <div className="simulation-workspace">
     <div className="page-heading"><div><h1>Simulation</h1><p>Build an experiment from the data you have.</p></div><div className="segmented" aria-label="Simulation views"><button aria-pressed={tab === 'new'} onClick={() => setTab('new')}>New simulation</button><button aria-pressed={tab === 'running'} onClick={() => setTab('running')}>Running</button><button aria-pressed={tab === 'history'} onClick={() => { setTab('history'); setHistoryRevision(value => value + 1); }}>History</button></div></div>
-    <section hidden={tab !== 'running'}><h2 ref={runningHeading} tabIndex={-1}>Running simulation</h2>{!run && <p>No simulation selected. Start a simulation or track one from History.</p>}{run && <section className="run-banner" aria-live="polite"><div><strong>Simulation #{run.id}: {run.status?.status ?? 'starting'}</strong><p>{run.status ? `${run.status.current_day} / ${run.status.total_days} days` : 'Waiting for status…'}</p>{run.status?.error_message && <p role="alert">{run.status.error_message}</p>}</div>{running && <progress aria-label="Simulation progress" value={run.status?.current_day ?? 0} max={run.status?.total_days || 1} />}{run.status && <Button onClick={() => { setTab('history'); void viewResult(run.id); }}>View result</Button>}{pollError && <div role="alert">Status unavailable: {pollError}<Button variant="outline" onClick={() => setPollRevision(value => value + 1)}>Retry status</Button></div>}</section>}{run && <><p>Estimated model calls: {run.status?.execution_config?.preflight?.estimated_llm_calls ?? 'Not recorded'}. Retries can exceed this estimate.</p><SimActivityView status={run.status} /></>}</section>
+    <section hidden={tab !== 'running'}><h2 ref={runningHeading} tabIndex={-1}>Running simulation</h2>{!run && <p>No simulation selected. Start a simulation or track one from History.</p>}{run && <section className="run-banner" aria-live="polite"><div><strong>Simulation #{run.id}: {run.status?.status ?? 'starting'}</strong><p>{run.status ? `${run.status.current_day} / ${run.status.total_days} days` : 'Waiting for status…'}</p>{run.status?.status === 'cancelled' ? <p>Run cancelled. Completed cycles remain available.</p> : run.status?.error_message && <p role="alert">{run.status.error_message}</p>}</div>{running && <progress aria-label="Simulation progress" value={run.status?.current_day ?? 0} max={run.status?.total_days || 1} />}{running && <Button variant="outline" disabled={cancelBusy || run.status?.status === 'cancelling'} onClick={() => void cancelRun(run.id)}>{cancelBusy || run.status?.status === 'cancelling' ? 'Cancelling…' : 'Cancel run'}</Button>}{run.status && <Button onClick={() => { setTab('history'); void viewResult(run.id); }}>View result</Button>}{pollError && <div role="alert">Status unavailable: {pollError}<Button variant="outline" onClick={() => setPollRevision(value => value + 1)}>Retry status</Button></div>}</section>}{run && <><p>Estimated model calls: {run.status?.execution_config?.preflight?.estimated_llm_calls ?? 'Not recorded'}. Retries can exceed this estimate.</p><SimActivityView status={run.status} /></>}</section>
     <div hidden={tab !== 'new'}>
       <div className="simulation-grid"><div className="simulation-main">
         {inventoryError && <p role="alert" className="notice error">{inventoryError}</p>}
@@ -200,7 +217,7 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
       </section>}
     </div>
     <section hidden={tab !== 'history'} className="history-section"><div className="section-heading"><h2>Simulation history</h2><Button variant="outline" onClick={() => setHistoryRevision(value => value + 1)}>Refresh history</Button></div>{historyError && <p role="alert" className="notice error">{historyError}</p>}
-      <div className="table-scroll"><table className="research-table"><thead><tr><th>Run</th><th>Status</th><th>Period / securities</th><th>Connection / model</th><th>Benchmark</th><th>Final NAV</th></tr></thead><tbody>{!runs.length && <tr><td colSpan={6}>No saved simulations yet.</td></tr>}{runs.map(item => <tr key={item.id} data-selected={viewing === item.id}><td><button className="text-link" onClick={() => void viewResult(item.id)}>{item.name || `Sim #${item.id}`}</button></td><td>{item.status}{['running', 'pending'].includes(item.status) && !running && <Button variant="ghost" onClick={() => { setRun({ id: item.id }); setTab('running'); setPollRevision(value => value + 1); }}>Track</Button>}{item.error_message && <p className="notice error">{item.error_message}</p>}</td><td>{item.start_date} – {item.end_date}<span className="cell-secondary">{item.tickers.join(', ')}</span></td><td>{item.llm_connection_name || item.provider || 'N/A'}<span className="cell-secondary">{item.model || 'N/A'}</span></td><td>{item.benchmark || 'N/A'}</td><td>{item.final_nav == null ? '—' : item.final_nav.toLocaleString(undefined, { style: 'currency', currency: 'USD' })}</td></tr>)}</tbody></table></div>
+      <div className="table-scroll"><table className="research-table"><thead><tr><th>Run</th><th>Status</th><th>Period / securities</th><th>Connection / model</th><th>Benchmark</th><th>Final NAV</th></tr></thead><tbody>{!runs.length && <tr><td colSpan={6}>No saved simulations yet.</td></tr>}{runs.map(item => <tr key={item.id} data-selected={viewing === item.id}><td><button className="text-link" onClick={() => void viewResult(item.id)}>{item.name || `Sim #${item.id}`}</button></td><td>{item.status}{['running', 'pending', 'cancelling'].includes(item.status) && !running && <Button variant="ghost" onClick={() => { setRun({ id: item.id }); setTab('running'); setPollRevision(value => value + 1); }}>Track</Button>}{['running', 'pending'].includes(item.status) && <Button variant="ghost" disabled={cancelBusy} onClick={() => void cancelRun(item.id)}>Cancel</Button>}{item.error_message && item.status !== 'cancelled' && <p className="notice error">{item.error_message}</p>}</td><td>{item.start_date} – {item.end_date}<span className="cell-secondary">{item.tickers.join(', ')}</span></td><td>{item.llm_connection_name || item.provider || 'N/A'}<span className="cell-secondary">{item.model || 'N/A'}</span></td><td>{item.benchmark || 'N/A'}</td><td>{item.final_nav == null ? '—' : item.final_nav.toLocaleString(undefined, { style: 'currency', currency: 'USD' })}</td></tr>)}</tbody></table></div>
       {resultLoading && <p role="status">Loading result #{viewing}…</p>}{resultError && <p role="alert" className="notice error">{resultError}<Button variant="outline" onClick={() => viewing && void viewResult(viewing)}>Retry result</Button></p>}{result && <div className="result-panel"><h2>Simulation #{viewing}</h2><SimResults result={result} /></div>}
     </section>
   </div>;

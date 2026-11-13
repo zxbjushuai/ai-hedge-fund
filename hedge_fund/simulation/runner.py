@@ -8,7 +8,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from hedge_fund.brokers import SimBroker
@@ -24,6 +24,7 @@ from hedge_fund.persistence.models import (
 from hedge_fund.pipeline import run_cycle
 from hedge_fund.pipeline.models import CorporateActionRecord
 from hedge_fund.simulation.audit import persist_completed_cycle, persist_failed_cycle
+from hedge_fund.simulation.cancellation import SimulationCancelled, SimulationNotCancellable
 from hedge_fund.simulation.carried import CarriedBook, load_carried_book
 from hedge_fund.simulation.persona_state import PersonaSignalEngine
 from hedge_fund.simulation.observation import RunObservation
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _RUNNERS: dict[int, "SimRunner"] = {}
 _LOCK = threading.Lock()
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 def _benchmark_closes(
@@ -320,6 +322,7 @@ class SimRunner:
         self._thread: threading.Thread | None = None
         self._concurrency = 1
         self.observer = None
+        self._cancel_event = threading.Event()
 
     # ------------------------------------------------------------------
     # Public API
@@ -454,6 +457,64 @@ class SimRunner:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def request_cancel(self) -> None:
+        """Ask the process-local worker to stop at its next checkpoint."""
+        self._cancel_event.set()
+
+    def _check_cancel(self) -> None:
+        if self._cancel_event.is_set():
+            raise SimulationCancelled("simulation cancelled by user")
+
+    @classmethod
+    def cancel(cls, sim_id: int, db_path: str) -> dict | None:
+        """Request cancellation and return the resulting persisted status."""
+        init_db(db_path)
+        stamp = datetime.now(timezone.utc).isoformat()
+        with _LOCK:
+            runner = _RUNNERS.get(sim_id)
+        owns_run = (
+            runner is not None
+            and Path(runner._db_path).resolve() == Path(db_path).resolve()
+        )
+        with get_session(db_path) as session:
+            run = session.execute(select(SimRun).where(SimRun.id == sim_id)).scalar_one_or_none()
+            if run is None:
+                return None
+            if run.status in _TERMINAL_STATUSES:
+                raise SimulationNotCancellable(
+                    f"simulation {sim_id} is already {run.status}"
+                )
+            if owns_run:
+                runner.request_cancel()
+                values = {"status": "cancelling"}
+            else:
+                values = {
+                    "status": "cancelled",
+                    "completed_at": stamp,
+                    "error_message": "Cancelled before an active worker was attached.",
+                }
+            updated = session.execute(
+                update(SimRun)
+                .where(
+                    SimRun.id == sim_id,
+                    SimRun.status.in_(("pending", "running", "cancelling")),
+                )
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            if not updated.rowcount:
+                session.rollback()
+                current = session.execute(select(SimRun).where(SimRun.id == sim_id)).scalar_one()
+                if current.status == "cancelling" or (
+                    owns_run and current.status == "cancelled"
+                ):
+                    return get_sim_status(sim_id, db_path)
+                raise SimulationNotCancellable(
+                    f"simulation {sim_id} is already {current.status}"
+                )
+            session.commit()
+        return get_sim_status(sim_id, db_path)
+
     @staticmethod
     def _get(sim_id: int) -> SimRunner | None:
         with _LOCK:
@@ -466,23 +527,42 @@ class SimRunner:
         *,
         recovered_at: datetime | None = None,
     ) -> list[int]:
-        """Fail persisted runs that no process-local worker can still own."""
+        """Recover persisted runs that no process-local worker can still own.
+
+        Orphaned ``running`` rows become ``failed``; rows already in
+        ``cancelling`` become ``cancelled`` because the user request is known.
+        """
         init_db(db_path)
         stamp = (recovered_at or datetime.now(timezone.utc)).isoformat()
         with get_session(db_path) as session:
             runs = session.execute(
                 select(SimRun)
-                .where(SimRun.status == "running")
+                .where(SimRun.status.in_(("running", "cancelling")))
                 .order_by(SimRun.id)
             ).scalars().all()
             recovered_ids = [run.id for run in runs]
             for run in runs:
-                run.status = "failed"
+                was_cancelling = run.status == "cancelling"
+                run.status = "cancelled" if was_cancelling else "failed"
                 run.completed_at = stamp
-                run.error_message = (
-                    "Interrupted: backend restart recovered stale running state "
-                    f"at {stamp}; no active worker remains."
-                )[:4000]
+                if was_cancelling:
+                    nav_row = session.execute(
+                        select(SimNavSnapshot.nav)
+                        .where(SimNavSnapshot.sim_run_id == run.id)
+                        .order_by(SimNavSnapshot.cycle_date.desc())
+                        .limit(1)
+                    ).scalar_one_or_none()
+                    run.final_nav = float(nav_row) if nav_row is not None else None
+                    message = (
+                        "Cancelled: backend restart recovered stale cancelling state "
+                        f"at {stamp}; no active worker remains."
+                    )
+                else:
+                    message = (
+                        "Interrupted: backend restart recovered stale running state "
+                        f"at {stamp}; no active worker remains."
+                    )
+                run.error_message = message[:4000]
             if recovered_ids:
                 session.commit()
         with _LOCK:
@@ -498,9 +578,11 @@ class SimRunner:
         if self.observer is None:
             self.observer = RunObservation(self._id, self._concurrency,
                                            Path(self._db_path).resolve().parent / "logs" / "simulations")
-        self._set_status("running")
-        self.observer.phase("simulation_started")
         try:
+            self._check_cancel()
+            self._set_status("running")
+            self._check_cancel()
+            self.observer.phase("simulation_started")
             spec = load_spec(self._fund_spec_path)
             spec = spec.model_copy(deep=True, update={"capital": self._capital})
             require_earnings = any(m.name == "pead" for s in spec.strategies for m in s.models)
@@ -545,7 +627,12 @@ class SimRunner:
                 initial_cash = carried_book.cash
                 initial_positions = carried_book.positions
             fund = Fund(spec, llm=self._llm)  # one immutable client for this run
-            persona_engine = PersonaSignalEngine(spec.persona_refresh, self._concurrency, self.observer)
+            persona_engine = PersonaSignalEngine(
+                spec.persona_refresh,
+                self._concurrency,
+                self.observer,
+                cancel_event=self._cancel_event,
+            )
             benchmark_base = benchmark_closes[days[0]]
             self._save_nav_snapshot(
                 get_session(self._db_path), days[0], initial_nav,
@@ -554,6 +641,7 @@ class SimRunner:
             )
             self._set_progress(1)
             for i, day in enumerate(days[1:], start=1):
+                self._check_cancel()
                 signal_day = days[i - 1]
                 self.observer.phase("cycle_started", cycle_number=i,
                                     signal_date=signal_day, execution_date=day)
@@ -572,8 +660,12 @@ class SimRunner:
                             for action in corporate_actions
                             if action.action_type == "split"
                         },
+                        cancel_event=self._cancel_event,
                     )
                     record.corporate_actions = corporate_actions
+                    self._check_cancel()
+                except SimulationCancelled:
+                    raise
                 except Exception as exc:
                     try:
                         persist_failed_cycle(
@@ -605,8 +697,13 @@ class SimRunner:
                 broker._last_trades = []
                 self._set_progress(i + 1)
                 self.observer.phase("cycle_committed")
+            self._check_cancel()
             self._finish(days)
             self.observer.phase("completed")
+        except SimulationCancelled:
+            self._cancelled()
+            self.observer.emit("simulation_cancelled", reason="cancelled by user")
+            self.observer.phase("cancelled")
         except Exception as exc:
             logger.exception("simulation %s failed", self._id)
             failure = classify_cycle_failure(exc)
@@ -615,6 +712,9 @@ class SimRunner:
             self.observer.phase("failed")
         finally:
             self.observer.close()
+            with _LOCK:
+                if _RUNNERS.get(self._id) is self:
+                    _RUNNERS.pop(self._id, None)
 
     def _prices_for_day(self, day: str) -> tuple[dict[str, float], dict[str, float]]:
         with get_session(self._db_path) as session:
@@ -660,6 +760,8 @@ class SimRunner:
         session = get_session(self._db_path)
         try:
             run = session.execute(select(SimRun).where(SimRun.id == self._id)).scalar_one()
+            if status == "running" and run.status == "cancelling":
+                return
             run.status = status
             session.commit()
         finally:
@@ -727,6 +829,23 @@ class SimRunner:
             run.completed_at = datetime.now(timezone.utc).isoformat()
             session.commit()
 
+    def _cancelled(self) -> None:
+        with get_session(self._db_path) as session:
+            run = session.execute(select(SimRun).where(SimRun.id == self._id)).scalar_one()
+            if run.status in _TERMINAL_STATUSES:
+                return
+            nav_row = session.execute(
+                select(SimNavSnapshot.nav)
+                .where(SimNavSnapshot.sim_run_id == self._id)
+                .order_by(SimNavSnapshot.cycle_date.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            run.status = "cancelled"
+            run.final_nav = float(nav_row) if nav_row is not None else None
+            run.completed_at = datetime.now(timezone.utc).isoformat()
+            run.error_message = "Cancelled by user."
+            session.commit()
+
 
 def get_sim_status(sim_id: int, db_path: str) -> dict | None:
     init_db(db_path)
@@ -735,15 +854,19 @@ def get_sim_status(sim_id: int, db_path: str) -> dict | None:
         run = session.execute(select(SimRun).where(SimRun.id == sim_id)).scalar_one_or_none()
         if run is None:
             return None
+        runner = SimRunner._get(sim_id)
+        activity = (
+            runner.observer.snapshot()
+            if runner is not None
+            and runner.observer is not None
+            and Path(runner._db_path).resolve() == Path(db_path).resolve()
+            else {"available": False}
+        )
         return {
             "id": run.id,
             "status": run.status,
             "current_day": run.current_day,
-            "activity": (SimRunner._get(sim_id).observer.snapshot()
-                         if SimRunner._get(sim_id) is not None
-                         and SimRunner._get(sim_id).observer is not None
-                         and Path(SimRunner._get(sim_id)._db_path).resolve() == Path(db_path).resolve()
-                         else {"available": False}),
+            "activity": activity,
             "execution_config": json.loads(run.execution_config) if run.execution_config else None,
             "total_days": run.total_days,
             "final_nav": run.final_nav,

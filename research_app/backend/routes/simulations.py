@@ -266,6 +266,26 @@ def sim_status(sim_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/sim/{sim_id}/cancel")
+def sim_cancel(sim_id: int):
+    """Request cooperative cancellation of a pending or running simulation."""
+    try:
+        from hedge_fund.simulation.cancellation import SimulationNotCancellable
+        from hedge_fund.simulation.runner import SimRunner
+
+        result = SimRunner.cancel(sim_id, _DB_PATH)
+        if result is None:
+            raise HTTPException(status_code=404, detail="sim not found")
+        return result
+    except HTTPException:
+        raise
+    except SimulationNotCancellable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("simulation cancellation failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/sim/result/{sim_id}")
 def sim_result(sim_id: int):
     """Get full simulation results."""

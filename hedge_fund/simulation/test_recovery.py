@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from hedge_fund.persistence.database import get_session, init_db
-from hedge_fund.persistence.models import SimRun
+from hedge_fund.persistence.models import SimNavSnapshot, SimRun
 from hedge_fund.simulation.runner import _RUNNERS, SimRunner
 
 
@@ -64,3 +64,24 @@ def test_recovery_removes_process_local_runner(tmp_path):
         assert 7 not in _RUNNERS
     finally:
         _RUNNERS.pop(7, None)
+
+
+def test_recovery_marks_stale_cancelling_run_cancelled(tmp_path):
+    db = str(tmp_path / "fund.db")
+    init_db(db)
+    with get_session(db) as session:
+        session.add(_run(8, "cancelling"))
+        session.add(SimNavSnapshot(
+            sim_run_id=8, cycle_date="2024-01-03", nav=1010.0,
+            cash=1010.0, equity=0.0, benchmark_nav=100.0,
+        ))
+        session.commit()
+
+    with get_session(db) as session:
+        assert SimRunner.recover_orphaned_runs(db) == [8]
+    with get_session(db) as session:
+        row = session.get(SimRun, 8)
+        assert row.status == "cancelled"
+        assert row.final_nav == 1010.0
+        assert row.completed_at
+        assert "backend restart" in row.error_message.lower()

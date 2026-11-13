@@ -1,5 +1,7 @@
 """run_cycle end-to-end tests — fake data client + fake analysts + real SimBroker."""
 
+from threading import Event
+
 import pytest
 
 from hedge_fund.brokers.sim import SimBroker
@@ -8,6 +10,7 @@ from hedge_fund.fund.spec import Fund, FundSpec
 from hedge_fund.models import Signal
 from hedge_fund.pipeline.models import CycleRecord
 from hedge_fund.pipeline.run_cycle import run_cycle
+from hedge_fund.simulation.cancellation import SimulationCancelled
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,19 @@ class FakeAnalyst:
         value = 0.0 if self._abstain else self._views.get(ticker, 0.0)
         return Signal(model_name=self._name, ticker=ticker, date=date,
                       value=value, metadata=metadata)
+
+
+class CancellingBroker(SimBroker):
+    """Real fills, then requests cancellation before the cycle record is built."""
+
+    def __init__(self, cancel_event, **kwargs):
+        super().__init__(**kwargs)
+        self.cancel_event = cancel_event
+
+    def place_order(self, order, cycle_date=None):
+        fill = super().place_order(order, cycle_date=cycle_date)
+        self.cancel_event.set()
+        return fill
 
 
 def _spec(strategies=None, max_position_pct=0.25, universe=("AAPL", "MSFT", "NVDA")):
@@ -122,6 +138,24 @@ def test_full_cycle_record_is_consistent():
     )
     # The short strategy's bearish view -> short position
     assert record.positions["MSFT"] < 0
+
+
+def test_cancel_after_fills_raises_before_cycle_record():
+    cancel_event = Event()
+    fund = Fund(
+        _spec(universe=("AAPL",), max_position_pct=1.0),
+        models={"solo": [FakeAnalyst("a", views={"AAPL": 1.0})]},
+    )
+    broker = CancellingBroker(cancel_event, cash=100_000.0, fee_rate=0.0)
+
+    with pytest.raises(SimulationCancelled):
+        run_cycle(
+            fund, "2024-06-03", broker, FakeDataClient(CLOSES), ["AAPL"],
+            cancel_event=cancel_event,
+        )
+
+    assert cancel_event.is_set()
+    assert broker.positions()  # execution happened; the caller discards the book
 
 
 def test_netting_math_two_strategies_unequal_slices():
