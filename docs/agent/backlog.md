@@ -13,8 +13,9 @@ and verified in one run. Update status with the date and commit hash.
 - `continue` = carried-book daily paper trading from a completed parent run.
 - `scripts/daily-pipeline.py` is a legacy/manual rolling-window tool (independent
   runs); it is not scheduled.
-- Backend startup fails stale `running` simulations and reports recovery/runtime
-  counts at `GET /dashboard/system/status`; cache jobs remain process-local.
+- Backend startup fails stale `running` simulations, converts stale `cancelling`
+  rows to `cancelled` with their last NAV, and reports recovery/runtime counts
+  at `GET /dashboard/system/status`; cache jobs remain process-local.
 
 ## P0 — daily pipeline and reliability
 
@@ -83,10 +84,15 @@ and `deepseek-v4.1-flash` model without manual DB edits; document key rotation.
 Acceptance: running it on a fresh `providers.db` yields a usable connection.
 
 ### AIHF-006 — Simulation cancel/resume
-Status: open
+Status: done (2026-11-13, `93c58df`; backend 383 tests, frontend 29 tests + lint/build). Adds `POST /dashboard/sim/{sim_id}/cancel` and cooperative checkpoints before each cycle, during persona preparation, and before/after order execution. Accepted requests move `pending`/`running` to `cancelling` and finish as `cancelled`; committed NAV snapshots and trades are preserved, no failed-cycle audit is written, and terminal runs reject further cancellation. Startup recovery converts stale `cancelling` rows to `cancelled` with their last NAV, and the Web Running/History views expose Cancel/Track controls. Resume remains AIHF-019.
 Goal: add cancellation and optional resume for simulations; clean up threads and
 status safely.
 Acceptance: API + UI; tests for cancel during signals/execution.
+Follow-up: cancellation is cooperative. Queued persona calls are cancelled before
+they reach the provider, but a request already in flight may finish; the runner
+then stops at the next checkpoint. All Web/ops runs are created through the
+backend API, so the process-local signal covers them. Cancelled runs are not
+valid carried-book parents (`load_carried_book` requires `completed`).
 
 ### AIHF-007 — Auth/reverse-proxy hardening
 Status: open
