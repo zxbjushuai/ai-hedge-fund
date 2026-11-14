@@ -95,10 +95,13 @@ backend API, so the process-local signal covers them. Cancelled runs are not
 valid carried-book parents (`load_carried_book` requires `completed`).
 
 ### AIHF-007 — Auth/reverse-proxy hardening
-Status: open
+Status: done (2026-11-14, `2cf3a15`; backend 397 tests, frontend 32 tests + lint/build). Adds a loopback-only backend bind guard, same-origin API resolution for remote pages, a Tailscale Serve plan/apply helper, and an operator runbook. No live Serve mapping was applied and services remain on loopback.
 Goal: document and implement a safe remote access path (Caddy + Basic Auth or
 Tailscale-only) without weakening localhost defaults.
 Acceptance: no unauthenticated route exposed beyond localhost; docs updated.
+Follow-up: the tailnet ACL/grant is the authentication boundary; there is no
+per-user authorization inside the Web app. Serve mappings are an explicit
+operator action and are not installed or reset automatically.
 
 ### AIHF-008 — Filing-date data quality (PEAD)
 Status: open
