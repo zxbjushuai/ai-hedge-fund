@@ -7,6 +7,10 @@ by the backend but are hidden from the Web connection list and new-run choices.
 
 ## Simulation progress and logs
 
+Remote access is opt-in and tailnet-only. Keep both services on loopback and
+follow `docs/agent/remote-access.md`; do not bind the unauthenticated API to the
+LAN or enable Tailscale Funnel.
+
 Review shows the call estimate and accepts **Model concurrency 1–8** (default 4).
 Confirm opens **Running**, showing current tickers/analysts, stages, elapsed time,
 HTTP attempts and failures. The server caps aggregate in-flight requests at 8 and

@@ -21,7 +21,9 @@ The project is **educational only**; it does not place real trades.
 - Backend: `systemd` unit `aihf-backend`, listening on `127.0.0.1:8000`.
 - Frontend: `systemd` unit `aihf-frontend`, Vite on `127.0.0.1:5173`.
 - Access is via SSH tunnel from Windows (`localhost:8000`, `localhost:5173`).
-  Services are deliberately not exposed on the LAN/Tailscale.
+  Services stay bound to loopback and are never exposed on the LAN. Optional
+  tailnet-only access uses Tailscale Serve; see `docs/agent/remote-access.md`.
+  Tailscale Funnel is forbidden.
 - Health: `curl -s http://127.0.0.1:8000/health`
 
 ## Commands
