@@ -70,6 +70,18 @@ def test_resolve_filing_dates_uses_nearest_safe_report_date():
     assert "2024-06-30" not in resolved
 
 
+def test_sec_acceptance_preserves_before_and_after_market_dates():
+    filings = [
+        SecFiling("10-Q", "2024-03-30", "2024-05-03", "2024-05-03T11:01:00.000Z", "before"),
+        SecFiling("10-Q", "2024-06-29", "2024-08-02", "2024-08-02T20:30:00.000Z", "after"),
+    ]
+
+    resolved = resolve_filing_dates(["2024-03-31", "2024-06-30"], filings)
+
+    assert resolved["2024-03-31"].filing_datetime == "2024-05-03T11:01:00.000Z"
+    assert resolved["2024-06-30"].filing_datetime == "2024-08-02T20:30:00.000Z"
+
+
 def test_us_adapter_enriches_only_matching_metrics_and_keeps_estimate_fallback():
     metrics = [
         FinancialMetrics(
