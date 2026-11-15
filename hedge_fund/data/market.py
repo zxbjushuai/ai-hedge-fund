@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from io import StringIO
@@ -12,7 +13,10 @@ import httpx
 
 from hedge_fund.data.errors import MarketDataParseError, UnsupportedMarketError
 from hedge_fund.data.models import EarningsRecord, FinancialMetrics, Price
+from hedge_fund.data.sec_filings import SecFilingClient, resolve_filing_dates
 from hedge_fund.data.yfinance_client import YFinanceClient
+
+logger = logging.getLogger(__name__)
 
 
 class Market(StrEnum):
@@ -124,8 +128,13 @@ def parse_nasdaq_catalog(nasdaq_text: str, other_text: str) -> list[CatalogSecur
 class USMarketDataAdapter:
     market = Market.US
 
-    def __init__(self, client: YFinanceClient | None = None) -> None:
+    def __init__(
+        self,
+        client: YFinanceClient | None = None,
+        filing_client: SecFilingClient | None = None,
+    ) -> None:
         self.client = client or YFinanceClient()
+        self.filing_client = filing_client or SecFilingClient()
 
     def sync_catalog(self) -> list[CatalogSecurity]:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
@@ -144,7 +153,27 @@ class USMarketDataAdapter:
         return {ticker: result.get(data_symbol, []) for ticker, data_symbol in mapped.items()}
 
     def get_financial_metrics(self, ticker: str, end_date: str, limit: int = 40) -> list[FinancialMetrics]:
-        return self.client.get_financial_metrics(yahoo_symbol(ticker), end_date, limit=limit)
+        symbol = yahoo_symbol(ticker)
+        metrics = self.client.get_financial_metrics(symbol, end_date, limit=limit)
+        for metric in metrics:
+            if not metric.filing_date_source:
+                metric.filing_date_source = "estimated_45d"
+        if not metrics or self.filing_client is None:
+            return metrics
+        try:
+            filings = self.filing_client.get_filings(symbol)
+            resolved = resolve_filing_dates([metric.report_period for metric in metrics], filings)
+        except Exception as exc:
+            logger.warning("SEC filing lookup for %s failed; keeping estimated dates: %s", symbol, exc)
+            return metrics
+        for metric in metrics:
+            filing = resolved.get(metric.report_period)
+            if filing is None:
+                continue
+            metric.filing_date = filing.filing_date
+            metric.filing_datetime = filing.filing_datetime
+            metric.filing_date_source = "sec_submissions"
+        return metrics
 
     def get_earnings_history(self, ticker: str, limit: int = 40) -> list[EarningsRecord]:
         return self.client.get_earnings_history(yahoo_symbol(ticker), limit=limit)

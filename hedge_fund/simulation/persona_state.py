@@ -197,10 +197,8 @@ class PersonaSignalEngine:
             if earnings_date:
                 reasons.append("actionable_earnings")
         else:
-            # TODO(event-driven-persona): cached yfinance metrics currently become
-            # visible on an estimated report_period + 45 days.  Use an authoritative,
-            # source-aware filing/acceptance timestamp before interpreting every
-            # snapshot hash change as an exact new_filing event.
+            # Cached metrics prefer SEC acceptance dates. Rows without a safe
+            # match retain the conservative report_period + 45 day fallback.
             if state.snapshot_hash != snapshot.content_hash:
                 reasons.append("new_filing")
             if earnings_date and earnings_date != state.latest_earnings_date:

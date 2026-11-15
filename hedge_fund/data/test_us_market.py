@@ -9,11 +9,12 @@ import pytest
 
 from hedge_fund.data.cache_service import fetch_security_data, persist_prices, plan_price_fetch, sync_us_catalog
 from hedge_fund.data.cache_jobs import CacheJobManager
+from hedge_fund.data.errors import MarketDataError
 from hedge_fund.data.market import CatalogSecurity, parse_nasdaq_catalog, yahoo_symbol
-from hedge_fund.data.models import Price
+from hedge_fund.data.models import EarningsRecord, FinancialMetrics, Price
 from hedge_fund.data.yfinance_client import YFinanceClient
 from hedge_fund.persistence.database import get_session
-from hedge_fund.persistence.models import PriceCache, Security
+from hedge_fund.persistence.models import EarningsCache, MetricsCache, PriceCache, Security
 
 
 NASDAQ = """Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares
@@ -80,6 +81,85 @@ def test_yahoo_prices_explicitly_request_raw_actions(monkeypatch):
     assert rows[0].adjusted_close == 10.25
     assert rows[0].dividend == 0.2
     assert rows[0].split_ratio == 2.0
+
+
+def test_yahoo_earnings_lookup_failure_preserves_provider_error(monkeypatch):
+    class Ticker:
+        def get_earnings_dates(self, limit=12):
+            raise RuntimeError("earnings dates unavailable")
+
+    monkeypatch.setattr("hedge_fund.data.yfinance_client.yf.Ticker", lambda ticker: Ticker())
+
+    with pytest.raises(MarketDataError):
+        YFinanceClient().get_earnings_history("AAA")
+
+
+def test_yahoo_earnings_successful_empty_result_is_no_data(monkeypatch):
+    class Ticker:
+        def get_earnings_dates(self, limit=12):
+            return pd.DataFrame()
+
+    monkeypatch.setattr("hedge_fund.data.yfinance_client.yf.Ticker", lambda ticker: Ticker())
+
+    assert YFinanceClient().get_earnings_history("AAA") == []
+
+
+def test_yahoo_metrics_fallback_abstains_for_historical_dates(monkeypatch):
+    class Ticker:
+        @property
+        def info(self):
+            return {"marketCap": 1000}
+
+        @property
+        def quarterly_financials(self):
+            return pd.DataFrame()
+
+        @property
+        def quarterly_balance_sheet(self):
+            return pd.DataFrame()
+
+        @property
+        def quarterly_cashflow(self):
+            return pd.DataFrame()
+
+    monkeypatch.setattr("hedge_fund.data.yfinance_client.yf.Ticker", lambda ticker: Ticker())
+
+    assert YFinanceClient().get_financial_metrics("AAA", "2020-01-01") == []
+
+
+def test_metrics_cache_preserves_sec_filing_date_source(tmp_path: Path):
+    metric = FinancialMetrics(
+        ticker="AAA", report_period="2024-03-31", period="ttm",
+        filing_date="2024-05-03", filing_date_source="sec_submissions",
+    )
+
+    class Adapter:
+        def get_financial_metrics(self, ticker, end_date, limit=40):
+            return [metric]
+
+    db = str(tmp_path / "sec-metrics.db")
+    result = fetch_security_data(db, "AAA", "2024-01-01", "2024-07-01", ["metrics"], adapter=Adapter())  # type: ignore[arg-type]
+
+    assert result["metrics"]["status"] == "complete"
+    with get_session(db) as session:
+        row = session.query(MetricsCache).one()
+        assert row.filing_date == "2024-05-03"
+        assert row.filing_date_source == "sec_submissions"
+
+
+def test_earnings_cache_counts_only_events_with_filing_dates(tmp_path: Path):
+    class Adapter:
+        def get_earnings_history(self, ticker, limit=40):
+            return [EarningsRecord(ticker=ticker, report_period="2024-03-31", source_type="10-Q")]
+
+    db = str(tmp_path / "undated-earnings.db")
+    result = fetch_security_data(db, "AAA", "2024-01-01", "2024-07-01", ["earnings"], adapter=Adapter())  # type: ignore[arg-type]
+
+    assert result["earnings"]["status"] == "no_data"
+    assert result["earnings"]["count"] == 0
+    assert any("filing date" in warning for warning in result["warnings"])
+    with get_session(db) as session:
+        assert session.query(EarningsCache).count() == 0
 
 
 def test_persisted_price_has_raw_provenance_and_coverage(tmp_path: Path):

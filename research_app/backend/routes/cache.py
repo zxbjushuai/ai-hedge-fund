@@ -227,7 +227,7 @@ def cache_list():
                 "metrics": metrics_map.get(t),
                 "earnings": earnings_map.get(t),
                 "coverage": coverage_map.get(t),
-                "filing_date_note": "quarterly metrics use estimated report_period + 45 days",
+                "filing_date_note": "quarterly metrics prefer SEC acceptance dates; unmatched rows use estimated report_period + 45 days",
             }
         return {"cached": result}
     finally:
@@ -428,5 +428,4 @@ def cache_delete(ticker: str):
         }
     finally:
         session.close()
-
 

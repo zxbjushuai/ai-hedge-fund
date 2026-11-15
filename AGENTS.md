@@ -184,3 +184,6 @@ Codex full access does **not** grant Linux root. The agent runs as user
 - Simulation ticker cap is 50.
 - The Web API has no authentication; it is only safe behind localhost/SSH tunnel.
 - `Sub2API` cannot serve `deepseek-v4.1-flash` today.
+- Existing metrics rows need a forced metrics refresh to acquire SEC filing
+  dates; unmatched rows retain the explicit `estimated_45d` fallback. See
+  `docs/agent/filing-date-provenance.md`.

@@ -308,10 +308,11 @@ def _persist_metrics(db_path: str, ticker: str, metrics: list, end_date: str) ->
                 "ticker", "market_cap", "enterprise_value", "price_to_earnings_ratio",
                 "price_to_book_ratio", "price_to_sales_ratio", "enterprise_value_to_ebitda_ratio",
                 "enterprise_value_to_revenue_ratio", "peg_ratio",
+                "filing_date", "filing_datetime", "filing_date_source",
             })
-            # TODO(event-driven-persona): replace this estimate with authoritative filing timestamps.
-            filing_date = (date.fromisoformat(metric.report_period) + timedelta(days=45)).isoformat()
-            values = dict(data=payload, filing_date=filing_date, filing_date_source="estimated_45d")
+            filing_date = metric.filing_date or (date.fromisoformat(metric.report_period) + timedelta(days=45)).isoformat()
+            filing_date_source = metric.filing_date_source or "estimated_45d"
+            values = dict(data=payload, filing_date=filing_date, filing_date_source=filing_date_source)
             if row is None:
                 session.add(MetricsCache(ticker=ticker, report_period=metric.report_period, **values))
             else:
@@ -323,14 +324,15 @@ def _persist_metrics(db_path: str, ticker: str, metrics: list, end_date: str) ->
 
 def _persist_earnings(db_path: str, ticker: str, earnings: list) -> tuple[int, list[str]]:
     warnings: list[str] = []
-    if not earnings:
-        warnings.append("Yahoo returned no earnings history; PEAD will remain neutral")
-    elif not has_actionable_surprise(earnings):
+    dated = [event for event in earnings if event.filing_date]
+    if not dated:
+        warnings.append("No actionable earnings events with an authoritative filing date; PEAD will remain neutral")
+    elif not has_actionable_surprise(dated):
         warnings.append("Yahoo returned no complete actual/estimate EPS surprise; PEAD will remain neutral")
+    persisted = 0
     with get_session(db_path) as session:
-        for event in earnings:
-            if not event.filing_date:
-                continue
+        for event in dated:
+            persisted += 1
             quarterly = event.quarterly
             values = dict(
                 report_period=event.report_period,
@@ -345,7 +347,7 @@ def _persist_earnings(db_path: str, ticker: str, earnings: list) -> tuple[int, l
                 for key, value in values.items():
                     setattr(row, key, value)
         session.commit()
-    return len(earnings), warnings
+    return persisted, warnings
 
 
 def fetch_security_data(

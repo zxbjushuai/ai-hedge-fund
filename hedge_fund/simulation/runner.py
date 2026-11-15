@@ -162,10 +162,8 @@ def estimate_persona_event_schedule(
                     if current_earnings:
                         reasons.append("actionable_earnings")
                 else:
-                    # Keep this estimate aligned with PersonaSignalEngine.  The cached
-                    # filing marker currently uses estimated_45d dates.
-                    # TODO(event-driven-persona): replay authoritative filing dates
-                    # once the cache stores source-aware filing timestamps.
+                    # Cached rows prefer SEC acceptance dates and retain a
+                    # conservative estimate only when no safe match exists.
                     if filing_marker != current_filing:
                         reasons.append("new_filing")
                     if current_earnings and current_earnings != earnings_marker:

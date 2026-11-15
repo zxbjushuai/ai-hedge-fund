@@ -302,6 +302,7 @@ class YFinanceClient:
                         period=period,
                         currency=info.get("currency"),
                         filing_date=(datetime.strptime(rp, "%Y-%m-%d") + timedelta(days=45)).strftime("%Y-%m-%d"),
+                        filing_date_source="estimated_45d",
                         shares_outstanding=shares,
                         gross_margin=gross_margin,
                         operating_margin=op_margin,
@@ -331,13 +332,17 @@ class YFinanceClient:
         """Fallback: single snapshot from stock.info."""
         if not info:
             return []
+        today = _date.today().isoformat()
+        if end_date[:10] < today:
+            return []
         return [
             FinancialMetrics(
                 ticker=ticker,
-                report_period=end_date,
+                report_period=today,
                 period=period,
                 currency=info.get("currency"),
-                filing_date=end_date,
+                filing_date=today,
+                filing_date_source="current_snapshot",
                 market_cap=info.get("marketCap"),
                 enterprise_value=info.get("enterpriseValue"),
                 price_to_earnings_ratio=info.get("trailingPE"),
@@ -463,76 +468,34 @@ class YFinanceClient:
         """Fetch historical earnings filings."""
         try:
             stock = yf.Ticker(ticker)
-            info = {}
-            dates_error: Exception | None = None
-
             try:
                 dates = _retry(lambda: stock.get_earnings_dates(limit=limit))
-                if dates is not None and not dates.empty:
-                    records = []
-                    for idx, row in dates.iterrows():
-                        announced = _fmt_date(idx)
-                        actual = _safe_float(row.get("Reported EPS"))
-                        estimate = _safe_float(row.get("EPS Estimate"))
-                        surprise = _safe_float(row.get("Surprise(%)"))
-                        if announced and actual is not None:
-                            records.append(EarningsRecord(
-                                ticker=ticker, report_period=announced,
-                                source_type="earnings", filing_date=announced,
-                                quarterly=EarningsData(
-                                    earnings_per_share=actual,
-                                    estimated_earnings_per_share=estimate,
-                                    eps_surprise=surprise_direction(surprise),
-                                    eps_surprise_percent=surprise,
-                                ),
-                            ))
-                    return records
             except Exception as exc:
-                dates_error = exc
                 logger.warning(
                     "yfinance get_earnings_dates(%s) failed; PEAD may be unavailable: %s",
                     ticker,
                     exc,
                 )
-
-            def _empty_earnings_data() -> EarningsData:
-                return EarningsData()
-
-            records: list[EarningsRecord] = []
-
-            try:
-                quarterly_financials = stock.quarterly_financials
-                if quarterly_financials is not None and not quarterly_financials.empty:
-                    for col_date in quarterly_financials.columns[:limit]:
-                        filing_date = col_date
-                        if hasattr(filing_date, "strftime"):
-                            filing_date = filing_date.strftime("%Y-%m-%d")
-
-                        qtr = _empty_earnings_data()
-                        if "Total Revenue" in quarterly_financials.index:
-                            qtr.revenue = float(quarterly_financials.loc["Total Revenue", col_date])
-                        if "Net Income" in quarterly_financials.index:
-                            qtr.net_income = float(quarterly_financials.loc["Net Income", col_date])
-                        if "Gross Profit" in quarterly_financials.index:
-                            qtr.gross_profit = float(quarterly_financials.loc["Gross Profit", col_date])
-
-                        records.append(
-                            EarningsRecord(
-                                ticker=ticker,
-                                report_period=filing_date,
-                                source_type="10-Q",
-                                filing_date=filing_date,
-                                fiscal_period=quarterly_financials.columns.name or "Q",
-                                currency=info.get("currency"),
-                                quarterly=qtr,
-                            )
-                        )
-            except Exception as exc:
-                if dates_error is None:
-                    dates_error = exc
-
-            if not records and dates_error is not None:
-                raise classify_market_error(dates_error) from dates_error
+                raise classify_market_error(exc) from exc
+            if dates is None or dates.empty:
+                return []
+            records = []
+            for idx, row in dates.iterrows():
+                announced = _fmt_date(idx)
+                actual = _safe_float(row.get("Reported EPS"))
+                estimate = _safe_float(row.get("EPS Estimate"))
+                surprise = _safe_float(row.get("Surprise(%)"))
+                if announced and actual is not None:
+                    records.append(EarningsRecord(
+                        ticker=ticker, report_period=announced,
+                        source_type="earnings", filing_date=announced,
+                        quarterly=EarningsData(
+                            earnings_per_share=actual,
+                            estimated_earnings_per_share=estimate,
+                            eps_surprise=surprise_direction(surprise),
+                            eps_surprise_percent=surprise,
+                        ),
+                    ))
             return records
         except Exception as e:
             logger.warning("yfinance get_earnings_history(%s) failed: %s", ticker, e)

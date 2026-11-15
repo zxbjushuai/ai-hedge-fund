@@ -56,6 +56,7 @@ class FinancialMetrics(BaseModel):
     # public. Null on rows without a dated SEC filing (deep-history archive).
     filing_date: str | None = None
     filing_datetime: str | None = None
+    filing_date_source: str | None = None
 
     # Historical share count, used to reconstruct point-in-time market cap.
     shares_outstanding: float | None = None
