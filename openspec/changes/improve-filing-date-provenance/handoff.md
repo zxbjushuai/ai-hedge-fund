@@ -18,8 +18,10 @@
 - Focused SEC/market-data tests: 23 passed.
 - Backend full suite: 407 passed, 39 deselected.
 - Frontend tests: 32 passed; lint and production build passed.
-- Live AAPL enrichment resolved all eight returned quarters to SEC acceptance
-  dates (`sec_submissions`).
+- Live AAPL enrichment resolved all six returned quarters to SEC acceptance
+  dates (`sec_submissions`). A forced backend metrics refresh persisted 11
+  AAPL/MSFT rows with SEC dates; 87 unmatched cached rows remain explicitly
+  estimated across 21 tickers.
 - Built-in Codex review against `backup-20261115-090857` found one P2 issue
   (provider failures collapsed to no-data); it was fixed and the rerun found no
   actionable regressions.
