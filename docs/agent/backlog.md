@@ -16,6 +16,9 @@ and verified in one run. Update status with the date and commit hash.
 - Backend startup fails stale `running` simulations, converts stale `cancelling`
   rows to `cancelled` with their last NAV, and reports recovery/runtime counts
   at `GET /dashboard/system/status`; cache jobs remain process-local.
+- Quarterly metrics prefer SEC `10-Q`/`10-K`/`20-F` acceptance dates within a
+  bounded report-date match; unmatched rows retain `estimated_45d`. PEAD only
+  uses dated Yahoo earnings announcements and abstains when none are available.
 
 ## P0 — daily pipeline and reliability
 
@@ -104,11 +107,14 @@ per-user authorization inside the Web app. Serve mappings are an explicit
 operator action and are not installed or reset automatically.
 
 ### AIHF-008 — Filing-date data quality (PEAD)
-Status: open
+Status: done (2026-11-15, `8c6c195`; backend 407 tests, frontend 32 tests + lint/build). Adds SEC submissions-based filing-date enrichment with explicit `sec_submissions` provenance, preserves the estimated fallback for unmatched rows, stops fabricating earnings filing dates, and keeps provider failures retryable.
 Goal: replace estimated `report_period + 45d` filing visibility with
 source-aware timestamps where available; abstain when uncertain.
 Acceptance: no lookahead; fixtures for before/after-market releases; PEAD
 behavior documented.
+Follow-up: SEC enrichment reads the recent submissions feed only; older cached
+quarters may remain `estimated_45d` until a paginated filing history is added.
+Forced metrics refreshes are required to upgrade existing rows.
 
 ### AIHF-009 — Cache/job retention and observability
 Status: open
