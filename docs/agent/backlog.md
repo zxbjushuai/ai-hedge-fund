@@ -117,10 +117,11 @@ quarters may remain `estimated_45d` until a paginated filing history is added.
 Forced metrics refreshes are required to upgrade existing rows.
 
 ### AIHF-009 — Cache/job retention and observability
-Status: open
+Status: done (2026-11-16, `e058cf2`; backend 421 tests, frontend 32 tests + lint/build). Adds `scripts/aihf_retention.py`, a dry-run-first planner and guarded apply helper for simulation, ops, and legacy daily artifacts; `aihf_ops.py retention` and an enriched `status`; safety tests and an operator runbook.
 Goal: retention policy for simulation JSONL/logs, heartbeat/metrics for the
 daily pipeline, and a simple failure summary.
 Acceptance: disk usage bounded; last-run status visible.
+Follow-up: `--apply` consumes a saved, reviewed plan and revalidates each file, but it does not inspect `sim_run` rows, so an active/pending simulation log can only be protected by the dry-run-first operator workflow. Tracked in AIHF-022. Retention remains manual and is not wired into the daily wrapper.
 
 ## P2 — scale and features
 
@@ -184,3 +185,10 @@ Status: open
 Goal: display startup recovery counts and current running/failed simulation plus
 cache-job status from `/dashboard/system/status`.
 Acceptance: status is visible with loading/error states; frontend tests cover it.
+
+### AIHF-022 — Exclude active simulation logs from retention apply
+Status: open
+Goal: join retention candidates to `sim_run` state so `--apply` cannot remove
+telemetry belonging to an active or pending simulation.
+Acceptance: active/pending run logs are rejected or protected even from a stale
+approved plan; tests cover a run starting after plan approval; docs updated.
