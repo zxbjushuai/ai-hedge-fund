@@ -63,6 +63,7 @@ when to fetch data and run simulations:
 .venv/bin/python scripts/aihf_ops.py cumulative --since 2026-01-02
 .venv/bin/python scripts/aihf_ops.py matrix --spec docs/agent/backtest-matrix.example.json
 .venv/bin/python scripts/aihf_ops.py analyze --last 5
+.venv/bin/python scripts/aihf_ops.py retention        # dry run; --apply needs approval
 ```
 
 - `backtest` = historical range for strategy comparison and optimization.

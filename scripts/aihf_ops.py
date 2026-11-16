@@ -18,12 +18,16 @@ from pathlib import Path
 
 import requests
 
+try:
+    from scripts import aihf_retention as retention
+except ImportError:  # direct `python scripts/aihf_ops.py` execution
+    import aihf_retention as retention
+
 API = os.environ.get("AIHF_API", "http://127.0.0.1:8000")
 REPO = Path(__file__).resolve().parents[1]
-UNIVERSE = Path(
-    os.environ.get("AIHF_UNIVERSE_FILE", str(REPO / "docs" / "agent" / "universe.txt"))
-)
+UNIVERSE = Path(os.environ.get("AIHF_UNIVERSE_FILE", str(REPO / "docs" / "agent" / "universe.txt")))
 OUT_DIR = REPO / "logs" / "ops"
+LOG_DIR = REPO / "logs"
 BENCHMARK = os.environ.get("AIHF_BENCHMARK", "SPY")
 DEFAULT_CONNECTION = os.environ.get("AIHF_CONNECTION_NAME", "sub2api opencode go")
 DEFAULT_MODEL = os.environ.get("AIHF_MODEL", "deepseek-v4.1-flash")
@@ -52,9 +56,7 @@ class SimulationSubmissionError(RuntimeError):
 def api(method: str, path: str, payload: dict | None = None) -> dict:
     response = requests.request(method, API + path, json=payload, timeout=60)
     if response.status_code >= 400:
-        raise RuntimeError(
-            f"{method} {path} -> {response.status_code}: {response.text[:1000]}"
-        )
+        raise RuntimeError(f"{method} {path} -> {response.status_code}: {response.text[:1000]}")
     return response.json()
 
 
@@ -62,11 +64,7 @@ def load_tickers(raw: str | None) -> list[str]:
     if raw:
         tickers = [item.strip().upper() for item in raw.split(",") if item.strip()]
     else:
-        tickers = [
-            line.strip().upper()
-            for line in UNIVERSE.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.startswith("#")
-        ]
+        tickers = [line.strip().upper() for line in UNIVERSE.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
     unique = list(dict.fromkeys(tickers))
     if not unique:
         raise SystemExit("no tickers")
@@ -228,9 +226,7 @@ def wait_cache(job_id: str) -> dict:
         status = job.get("status")
         progress = job.get("progress", {})
         print(
-            f"cache {job_id}: {status} "
-            f"{progress.get('completed', 0)}/{progress.get('total', 0)} "
-            f"failed={progress.get('failed', 0)}",
+            f"cache {job_id}: {status} " f"{progress.get('completed', 0)}/{progress.get('total', 0)} " f"failed={progress.get('failed', 0)}",
             flush=True,
         )
         if status in {"completed", "partial", "failed", "cancelled"}:
@@ -244,8 +240,7 @@ def wait_sim(sim_id: int) -> dict:
     while time.time() < deadline:
         status = api("GET", f"/dashboard/sim/status/{sim_id}")
         print(
-            f"sim {sim_id}: {status.get('status')} "
-            f"day {status.get('current_day')}/{status.get('total_days')}",
+            f"sim {sim_id}: {status.get('status')} " f"day {status.get('current_day')}/{status.get('total_days')}",
             flush=True,
         )
         if status.get("status") in {"completed", "failed"}:
@@ -311,12 +306,7 @@ def run_simulation(
     out.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
     print("saved", out, flush=True)
     if status.get("status") == "completed":
-        print(
-            f"sim {sim_id} completed: final_nav={result.get('final_nav')} "
-            f"total={result.get('total_return_pct')}% "
-            f"excess={result.get('excess_return_pct')}% "
-            f"maxdd={result.get('max_drawdown_pct')}%"
-        )
+        print(f"sim {sim_id} completed: final_nav={result.get('final_nav')} " f"total={result.get('total_return_pct')}% " f"excess={result.get('excess_return_pct')}% " f"maxdd={result.get('max_drawdown_pct')}%")
     else:
         print(
             f"sim {sim_id} {status.get('status')}: {status.get('error_message')}",
@@ -329,28 +319,102 @@ def cmd_status(args: argparse.Namespace) -> int:
     print("health:", api("GET", "/health"))
     providers = api("GET", "/dashboard/llm/providers").get("providers", [])
     for provider in providers:
-        print(
-            f"provider {provider['id']}: {provider['name']} "
-            f"vendor={provider.get('vendor')} protocol={provider.get('protocol')} "
-            f"enabled={provider.get('enabled')} url={provider.get('base_url')}"
-        )
+        print(f"provider {provider['id']}: {provider['name']} " f"vendor={provider.get('vendor')} protocol={provider.get('protocol')} " f"enabled={provider.get('enabled')} url={provider.get('base_url')}")
     runs = api("GET", "/dashboard/sim/runs").get("runs", [])
-    for run in runs[:8]:
-        print(
-            f"run {run.get('id')}: {run.get('status')} "
-            f"{run.get('start_date')}..{run.get('end_date')} "
-            f"connection={run.get('llm_connection_name')}"
+    system = api("GET", "/dashboard/system/status")
+    plan = retention.build_retention_plan(
+        LOG_DIR,
+        keep_days=args.keep_days,
+        min_age_days=args.min_age_days,
+        max_total_bytes=int(args.max_total_mb * 1024 * 1024),
+    )
+    for line in build_status_report(system, runs, plan):
+        print(line)
+    return 0
+
+
+def _run_label(run: dict) -> str:
+    return f"{run.get('id')} {run.get('status')} {run.get('start_date')}..{run.get('end_date')}"
+
+
+def _clean_error(value: object, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def build_status_report(system: dict, runs: list[dict], plan: retention.RetentionPlan) -> list[str]:
+    counts = system.get("simulations", {})
+    status_order = ("completed", "failed", "running", "pending", "cancelling", "cancelled")
+    status_text = " ".join(f"{status}={counts.get(status, 0)}" for status in status_order)
+    lines = [
+        f"last run: {_run_label(runs[0])}" if runs else "last run: none",
+        f"simulations: {status_text}",
+    ]
+    failure = next(
+        (run for run in runs if run.get("status") in {"failed", "cancelled"}),
+        None,
+    )
+    if failure is not None:
+        detail = _clean_error(failure.get("error_message"))
+        lines.append(f"latest failure: run {_run_label(failure)}" + (f": {detail}" if detail else ""))
+    elif counts.get("failed", 0) or counts.get("cancelled", 0):
+        lines.append("latest failure: not in the recent 50 runs; see simulation history")
+    else:
+        lines.append("latest failure: none")
+    cache = system.get("cache_jobs", {})
+    lines.append(f"cache jobs: active={cache.get('active', 0)} total={cache.get('total', 0)}")
+    recovery = system.get("startup_recovery", {})
+    if recovery:
+        lines.append("startup recovery: " f"simulations_recovered={recovery.get('orphaned_simulations_recovered', 0)} " f"simulations_failed={recovery.get('orphaned_simulations_failed', 0)} " f"cache_jobs_failed={recovery.get('orphaned_cache_jobs_failed', 0)}")
+    budget_state = "OVER BUDGET " if plan.current_over_budget else "within "
+    lines.append(f"retention: {len(plan.selected)} candidate(s), {retention.format_bytes(plan.selected_bytes)}; " f"managed={retention.format_bytes(plan.total_bytes)} across {len(plan.files)} file(s), " f"{budget_state}{retention.format_bytes(plan.max_total_bytes)} budget")
+    return lines
+
+
+def cmd_retention(args: argparse.Namespace) -> int:
+    saved_plan: Path | None = None
+    if args.apply:
+        if not args.plan_file:
+            print(
+                "retention --apply requires --plan-file from an approved dry run",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            plan = retention.load_plan(args.plan_file, expected_root=LOG_DIR)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            print(f"retention plan rejected: {exc}", file=sys.stderr)
+            return 2
+        applied = retention.apply_retention(plan)
+    else:
+        max_total_bytes = int(args.max_total_mb * 1024 * 1024)
+        plan = retention.build_retention_plan(
+            LOG_DIR,
+            keep_days=args.keep_days,
+            min_age_days=args.min_age_days,
+            max_total_bytes=max_total_bytes,
         )
+        applied = None
+        if args.plan_file:
+            saved_plan = retention.save_plan(plan, args.plan_file)
+    if args.json:
+        payload = plan.as_dict()
+        if applied is not None:
+            payload["apply"] = applied.as_dict()
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        for line in retention.format_plan(plan, applied):
+            print(line)
+        if saved_plan is not None:
+            print(f"saved reviewed plan: {saved_plan}")
+    if applied is not None and applied.errors:
+        return 1
     return 0
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
     tickers = load_tickers(args.tickers)
-    start = (
-        date.fromisoformat(args.start)
-        if args.start
-        else date.today() - timedelta(days=args.days)
-    )
+    start = date.fromisoformat(args.start) if args.start else date.today() - timedelta(days=args.days)
     end = date.fromisoformat(args.end) if args.end else date.today()
     data_types = [item.strip() for item in args.types.split(",") if item.strip()]
     job = api(
@@ -431,15 +495,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         except Exception as exc:
             lines.append(f"- run {sim_id}: result unavailable ({exc})")
             continue
-        lines.append(
-            f"- run {sim_id} {run.get('status')} "
-            f"{run.get('start_date')}..{run.get('end_date')} "
-            f"model={result.get('model')} conn={result.get('llm_connection_name')} "
-            f"final_nav={result.get('final_nav')} "
-            f"total={result.get('total_return_pct')}% "
-            f"excess={result.get('excess_return_pct')}% "
-            f"maxdd={result.get('max_drawdown_pct')}%"
-        )
+        lines.append(f"- run {sim_id} {run.get('status')} " f"{run.get('start_date')}..{run.get('end_date')} " f"model={result.get('model')} conn={result.get('llm_connection_name')} " f"final_nav={result.get('final_nav')} " f"total={result.get('total_return_pct')}% " f"excess={result.get('excess_return_pct')}% " f"maxdd={result.get('max_drawdown_pct')}%")
         print(lines[-1])
     out = OUT_DIR / f"analyze-{time.strftime('%Y%m%d-%H%M%S')}.md"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -683,7 +739,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     status = sub.add_parser("status")
+    status.add_argument("--keep-days", type=int, default=retention.DEFAULT_KEEP_DAYS)
+    status.add_argument("--min-age-days", type=int, default=retention.DEFAULT_MIN_AGE_DAYS)
+    status.add_argument("--max-total-mb", type=float, default=retention.DEFAULT_MAX_TOTAL_MB)
     status.set_defaults(func=cmd_status)
+
+    retention_parser = sub.add_parser("retention", help="inspect or apply managed-log retention")
+    retention_parser.add_argument("--keep-days", type=int, default=retention.DEFAULT_KEEP_DAYS)
+    retention_parser.add_argument("--min-age-days", type=int, default=retention.DEFAULT_MIN_AGE_DAYS)
+    retention_parser.add_argument("--max-total-mb", type=float, default=retention.DEFAULT_MAX_TOTAL_MB)
+    retention_parser.add_argument(
+        "--plan-file",
+        help="write a dry-run plan or load an approved plan for --apply",
+    )
+    retention_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="delete only files in the approved --plan-file snapshot",
+    )
+    retention_parser.add_argument("--json", action="store_true")
+    retention_parser.set_defaults(func=cmd_retention)
 
     fetch = sub.add_parser("fetch")
     fetch.add_argument("--tickers")
