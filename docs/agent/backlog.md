@@ -19,6 +19,8 @@ and verified in one run. Update status with the date and commit hash.
 - Quarterly metrics prefer SEC `10-Q`/`10-K`/`20-F` acceptance dates within a
   bounded report-date match; unmatched rows retain `estimated_45d`. PEAD only
   uses dated Yahoo earnings announcements and abstains when none are available.
+- Retention reads active simulation state read-only, protects
+  `pending`/`running`/`cancelling` run logs, and rechecks state at apply time.
 
 ## P0 — daily pipeline and reliability
 
@@ -187,7 +189,7 @@ cache-job status from `/dashboard/system/status`.
 Acceptance: status is visible with loading/error states; frontend tests cover it.
 
 ### AIHF-022 — Exclude active simulation logs from retention apply
-Status: open
+Status: done (2026-11-17, `97a6f88`; backend 429 tests, frontend 32 tests + lint/build). Retention loads `sim_run` state read-only using the backend-equivalent `FUND_DB_PATH`, protects pending/running/cancelling `sim-{id}.log` files during age and budget planning, and revalidates state before applying a saved plan. Database read failures abort cleanup.
 Goal: join retention candidates to `sim_run` state so `--apply` cannot remove
 telemetry belonging to an active or pending simulation.
 Acceptance: active/pending run logs are rejected or protected even from a stale

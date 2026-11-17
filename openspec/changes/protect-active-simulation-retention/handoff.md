@@ -39,3 +39,4 @@
 
 - No new backlog item. Retention remains manual and still requires explicit
   approval of the saved plan before `--apply`.
+- Feature commit: `97a6f88` (`fix(agent): protect active simulation logs from retention`).
