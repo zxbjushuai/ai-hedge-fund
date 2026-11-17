@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,12 +17,45 @@ import scripts.aihf_retention as retention
 NOW = datetime(2026, 11, 16, 9, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_fund_db(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(ops, "FUND_DB_PATH", tmp_path / "fund.db", raising=False)
+
+
 def _write(path: Path, when: datetime, payload: bytes = b"x") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     stamp = when.timestamp()
     os.utime(path, (stamp, stamp))
     return path
+
+
+def _run_db(path: Path, statuses: dict[int, str]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE sim_run (id INTEGER PRIMARY KEY, status TEXT NOT NULL)")
+        connection.executemany(
+            "INSERT INTO sim_run (id, status) VALUES (?, ?)",
+            sorted(statuses.items()),
+        )
+    return path
+
+
+def _set_run_status(path: Path, run_id: int, status: str) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE sim_run SET status = ? WHERE id = ?", (status, run_id))
+
+
+def test_fund_db_path_resolution_matches_backend_settings():
+    from research_app.backend.config import settings
+
+    assert ops.resolve_fund_db_path() == settings.fund_db
+
+
+def test_fund_db_path_resolution_expands_home(monkeypatch):
+    monkeypatch.setenv("FUND_DB_PATH", "~/retention-test.db")
+
+    assert ops.resolve_fund_db_path() == (Path.home() / "retention-test.db").resolve()
 
 
 def test_plan_selects_stale_files_and_keeps_newest_per_directory(tmp_path: Path):
@@ -59,6 +93,62 @@ def test_plan_selects_stale_files_and_keeps_newest_per_directory(tmp_path: Path)
     )
     assert only_stale.selected == ()
     assert only_file.exists()
+
+
+def test_active_run_lookup_reads_only_pending_running_and_cancelling(tmp_path: Path):
+    database = _run_db(
+        tmp_path / "fund.db",
+        {
+            1: "pending",
+            2: "running",
+            3: "cancelling",
+            4: "completed",
+            5: "failed",
+            6: "cancelled",
+        },
+    )
+
+    assert retention.load_active_simulation_run_ids(database) == frozenset({1, 2, 3})
+
+
+def test_active_run_lookup_treats_missing_database_as_no_active_runs(tmp_path: Path):
+    assert retention.load_active_simulation_run_ids(tmp_path / "missing.db") == frozenset()
+
+
+def test_plan_protects_active_simulation_logs_from_age_and_budget(tmp_path: Path):
+    root = tmp_path / "logs"
+    active = _write(root / "simulations" / "sim-7.log", NOW - timedelta(days=40), b"active")
+    pending = _write(root / "simulations" / "sim-8.log", NOW - timedelta(days=40), b"pending")
+    _write(root / "simulations" / "sim-9.log", NOW - timedelta(days=1), b"newest")
+
+    plan = retention.build_retention_plan(
+        root,
+        now=NOW,
+        keep_days=0,
+        min_age_days=1,
+        max_total_bytes=0,
+        active_simulation_ids={7, 8},
+    )
+
+    assert plan.selected == ()
+    assert plan.active_simulation_ids == (7, 8)
+    assert plan.skipped == (
+        {"path": "simulations/sim-7.log", "reason": "active_simulation"},
+        {"path": "simulations/sim-8.log", "reason": "active_simulation"},
+    )
+    assert active.exists() and pending.exists()
+
+
+def test_format_plan_reports_active_simulation_protection(tmp_path: Path):
+    root = tmp_path / "logs"
+    _write(root / "simulations" / "sim-7.log", NOW - timedelta(days=40), b"active")
+    _write(root / "simulations" / "sim-8.log", NOW - timedelta(days=1), b"newest")
+    plan = retention.build_retention_plan(root, now=NOW, active_simulation_ids={7})
+
+    output = "\n".join(retention.format_plan(plan))
+
+    assert "protected: 1 active simulation log(s)" in output
+    assert "skipped: 1 protected or unsafe path(s)" in output
 
 
 def test_plan_deletes_oldest_files_to_fit_budget_but_not_recent_ones(tmp_path: Path):
@@ -266,6 +356,61 @@ def test_apply_deletes_only_the_reviewed_plan_snapshot(tmp_path: Path, monkeypat
     assert ops.cmd_retention(args) == 0
     assert not old_ops.exists()
     assert protected_ops.exists() and newer_ops.exists() and late_stale.exists()
+
+
+def test_apply_rechecks_run_state_after_plan_approval(tmp_path: Path, monkeypatch, capsys):
+    root = tmp_path / "logs"
+    stale = _write(root / "simulations" / "sim-5.log", NOW - timedelta(days=40), b"old")
+    _write(root / "simulations" / "sim-6.log", NOW - timedelta(days=1), b"new")
+    database = _run_db(tmp_path / "fund.db", {5: "completed", 6: "completed"})
+    plan_file = tmp_path / "approved-plan.json"
+    monkeypatch.setattr(ops, "LOG_DIR", root)
+    monkeypatch.setattr(ops, "FUND_DB_PATH", database)
+    monkeypatch.setattr(retention, "_utcnow", lambda: NOW)
+    args = SimpleNamespace(
+        keep_days=30,
+        min_age_days=1,
+        max_total_mb=512.0,
+        apply=False,
+        json=False,
+        plan_file=plan_file,
+    )
+
+    assert ops.cmd_retention(args) == 0
+    saved = json.loads(plan_file.read_text(encoding="utf-8"))
+    assert [item["path"] for item in saved["selected"]] == ["simulations/sim-5.log"]
+
+    _set_run_status(database, 5, "running")
+    capsys.readouterr()
+    args.apply = True
+
+    assert ops.cmd_retention(args) == 1
+    output = capsys.readouterr().out
+    assert "simulations/sim-5.log: active_simulation" in output
+    assert stale.exists()
+
+
+def test_cmd_retention_fails_closed_when_run_state_cannot_be_read(tmp_path: Path, monkeypatch, capsys):
+    root = tmp_path / "logs"
+    stale = _write(root / "simulations" / "sim-5.log", NOW - timedelta(days=40), b"old")
+    database = tmp_path / "fund.db"
+    database.write_bytes(b"not a sqlite database")
+    plan_file = tmp_path / "approved-plan.json"
+    monkeypatch.setattr(ops, "LOG_DIR", root)
+    monkeypatch.setattr(ops, "FUND_DB_PATH", database)
+    args = SimpleNamespace(
+        keep_days=30,
+        min_age_days=1,
+        max_total_mb=512.0,
+        apply=False,
+        json=False,
+        plan_file=plan_file,
+    )
+
+    assert ops.cmd_retention(args) == 2
+    assert "active-run check failed" in capsys.readouterr().err
+    assert stale.exists()
+    assert not plan_file.exists()
 
 
 def test_apply_requires_plan_file_and_rejects_a_different_root(tmp_path: Path, monkeypatch, capsys):

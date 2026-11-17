@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +23,12 @@ DEFAULT_KEEP_DAYS = 30
 DEFAULT_MIN_AGE_DAYS = 1
 DEFAULT_MAX_TOTAL_MB = 512
 PLAN_SCHEMA = "aihf-retention-plan-v1"
+ACTIVE_SIMULATION_STATUSES = ("pending", "running", "cancelling")
+SIMULATION_LOG_PATTERN = re.compile(r"sim-(\d+)\.log")
+
+
+class RetentionStateError(ValueError):
+    """Retention could not verify runtime state required for safe deletion."""
 
 
 def _utcnow() -> datetime:
@@ -69,6 +77,7 @@ class RetentionPlan:
     selected_bytes: int
     remaining_bytes: int
     over_budget: bool
+    active_simulation_ids: tuple[int, ...] = ()
 
     @property
     def current_over_budget(self) -> bool:
@@ -90,6 +99,7 @@ class RetentionPlan:
             "over_budget": self.over_budget,
             "selected": [item.as_dict() for item in self.selected],
             "skipped": list(self.skipped),
+            "active_simulation_ids": list(self.active_simulation_ids),
         }
 
 
@@ -138,6 +148,7 @@ def load_plan(path: str | Path, *, expected_root: str | Path | None = None) -> R
         selected.append(Selection(item, str(entry.get("reason", "saved_plan"))))
         seen.add(relative)
     max_total_bytes = int(payload["max_total_bytes"])
+    active_simulation_ids = tuple(sorted({int(value) for value in payload.get("active_simulation_ids", [])}))
     total_bytes = sum(item.size for item in files)
     selected_bytes = sum(item.file.size for item in selected)
     remaining_bytes = total_bytes - selected_bytes
@@ -154,7 +165,28 @@ def load_plan(path: str | Path, *, expected_root: str | Path | None = None) -> R
         selected_bytes=selected_bytes,
         remaining_bytes=remaining_bytes,
         over_budget=remaining_bytes > max_total_bytes,
+        active_simulation_ids=active_simulation_ids,
     )
+
+
+def load_active_simulation_run_ids(fund_db: str | Path) -> frozenset[int]:
+    """Read pending/running/cancelling run IDs without opening the database writable."""
+    path = Path(fund_db)
+    if not path.exists():
+        return frozenset()
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
+            rows = connection.execute(
+                f"SELECT id FROM sim_run WHERE status IN ({','.join('?' for _ in ACTIVE_SIMULATION_STATUSES)})",
+                ACTIVE_SIMULATION_STATUSES,
+            ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table: sim_run" in str(exc):
+            return frozenset()
+        raise RetentionStateError(f"could not read active simulation state from {path}: {type(exc).__name__}") from exc
+    except sqlite3.Error as exc:
+        raise RetentionStateError(f"could not read active simulation state from {path}: {type(exc).__name__}") from exc
+    return frozenset(int(row[0]) for row in rows)
 
 
 def _file_from_dict(root: Path, entry: dict) -> ManagedFile:
@@ -180,6 +212,7 @@ def build_retention_plan(
     keep_days: int = DEFAULT_KEEP_DAYS,
     min_age_days: int = DEFAULT_MIN_AGE_DAYS,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_MB * 1024 * 1024,
+    active_simulation_ids: set[int] | frozenset[int] | tuple[int, ...] = (),
 ) -> RetentionPlan:
     """Return a deterministic deletion plan without changing the filesystem."""
     if keep_days < 0 or min_age_days < 0 or max_total_bytes < 0:
@@ -187,19 +220,23 @@ def build_retention_plan(
     root_path = Path(root)
     generated_at = now or _utcnow()
     files, skipped = _scan(root_path)
+    active_ids = tuple(sorted({int(value) for value in active_simulation_ids}))
+    active_lookup = set(active_ids)
     newest_by_directory: dict[str, ManagedFile] = {}
     for item in files:
         current = newest_by_directory.get(item.directory)
         if current is None or (item.modified, item.relative) > (current.modified, current.relative):
             newest_by_directory[item.directory] = item
     protected = {item.path for item in newest_by_directory.values()}
+    active_paths = {item.path for item in files if _simulation_log_run_id(item) in active_lookup}
+    skipped.extend({"path": item.relative, "reason": "active_simulation"} for item in files if item.path in active_paths)
 
     selected: dict[Path, Selection] = {}
     age_cutoff = generated_at - timedelta(days=keep_days)
     minimum_cutoff = generated_at - timedelta(days=min_age_days)
     effective_age_cutoff = min(age_cutoff, minimum_cutoff)
     for item in files:
-        if item.path not in protected and item.modified < effective_age_cutoff:
+        if item.path not in protected and item.path not in active_paths and item.modified < effective_age_cutoff:
             selected[item.path] = Selection(item, "older_than_keep_days")
 
     remaining = sum(item.size for item in files if item.path not in selected)
@@ -207,7 +244,7 @@ def build_retention_plan(
         for item in files:
             if remaining <= max_total_bytes:
                 break
-            if item.path in protected or item.path in selected:
+            if item.path in protected or item.path in active_paths or item.path in selected:
                 continue
             if item.modified < minimum_cutoff:
                 selected[item.path] = Selection(item, "size_budget")
@@ -229,6 +266,7 @@ def build_retention_plan(
         selected_bytes=selected_bytes,
         remaining_bytes=total_bytes - selected_bytes,
         over_budget=remaining > max_total_bytes,
+        active_simulation_ids=active_ids,
     )
 
 
@@ -279,12 +317,25 @@ def _scan(root: Path) -> tuple[list[ManagedFile], list[dict]]:
 
 def apply_retention(plan: RetentionPlan) -> ApplyResult:
     """Delete only the still-valid files selected by ``build_retention_plan``."""
+    return apply_retention_with_state(plan, active_simulation_ids=plan.active_simulation_ids)
+
+
+def apply_retention_with_state(
+    plan: RetentionPlan,
+    *,
+    active_simulation_ids: set[int] | frozenset[int] | tuple[int, ...],
+) -> ApplyResult:
+    """Delete planned files after re-checking current active simulation state."""
     root = Path(os.path.abspath(plan.root))
+    active_lookup = {int(value) for value in active_simulation_ids}
     deleted: list[str] = []
     errors: list[dict] = []
     for selection in plan.selected:
         item = selection.file
         path = Path(item.path)
+        if _simulation_log_run_id(item) in active_lookup:
+            errors.append({"path": item.relative, "reason": "active_simulation"})
+            continue
         failure = _apply_guard(root, item)
         if failure is not None:
             errors.append({"path": item.relative, "reason": failure})
@@ -296,6 +347,13 @@ def apply_retention(plan: RetentionPlan) -> ApplyResult:
             continue
         deleted.append(item.relative)
     return ApplyResult(tuple(deleted), tuple(errors))
+
+
+def _simulation_log_run_id(item: ManagedFile) -> int | None:
+    if item.directory != "simulations":
+        return None
+    match = SIMULATION_LOG_PATTERN.fullmatch(Path(item.relative).name)
+    return int(match.group(1)) if match else None
 
 
 def _apply_guard(root: Path, item: ManagedFile) -> str | None:
@@ -341,8 +399,11 @@ def format_plan(plan: RetentionPlan, applied: ApplyResult | None = None) -> list
         lines.append(f"  - {selection.file.relative} ({format_bytes(selection.file.size)}, {selection.reason})")
     if len(plan.selected) > 20:
         lines.append(f"  - ... {len(plan.selected) - 20} more")
+    active_protected = sum(item.get("reason") == "active_simulation" for item in plan.skipped)
+    if active_protected:
+        lines.append(f"protected: {active_protected} active simulation log(s)")
     if plan.skipped:
-        lines.append(f"skipped: {len(plan.skipped)} unsafe or unreadable path(s)")
+        lines.append(f"skipped: {len(plan.skipped)} protected or unsafe path(s)")
     if applied is None:
         lines.append("dry run: no files were deleted (rerun with --apply after approval)")
     else:

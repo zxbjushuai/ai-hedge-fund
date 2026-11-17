@@ -27,6 +27,15 @@ symlinks, and will not budget-prune files newer than one day. If recent logs
 alone exceed the cap, the report says `OVER BUDGET` rather than deleting active
 evidence.
 
+The planner also reads `sim_run` state from `fund.db` in read-only mode and
+protects `logs/simulations/sim-{id}.log` while run `{id}` is `pending`, `running`,
+or `cancelling`. These files are listed as `active_simulation` and cannot be
+selected by age or size-budget pruning. If an existing database cannot be read,
+the command fails closed instead of assuming that no runs are active.
+`FUND_DB_PATH` is resolved from the repository `.env` with the same relative-path,
+home-directory, and override semantics as the backend, so the command checks the
+database used by the running service.
+
 `status` prints the latest simulation, aggregated simulation/cache counts, the
 newest failed run with a clipped error, startup recovery counts, and the current
 retention plan. It does not print provider credentials.
@@ -54,3 +63,8 @@ symlinks (including a symlinked `logs` root or managed directory), paths outside
 size and nanosecond modification time to match the saved snapshot; a file
 written after planning is skipped as `changed_since_planning`. Any per-file
 failure is printed and makes the command exit nonzero.
+
+Run state is loaded again at apply time. If a run becomes pending, running, or
+cancelling after the plan was approved, its log is skipped as
+`active_simulation` even though the saved snapshot selected it. Terminal run
+states do not block cleanup.

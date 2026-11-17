@@ -17,17 +17,27 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 
 try:
     from scripts import aihf_retention as retention
 except ImportError:  # direct `python scripts/aihf_ops.py` execution
     import aihf_retention as retention
 
-API = os.environ.get("AIHF_API", "http://127.0.0.1:8000")
 REPO = Path(__file__).resolve().parents[1]
+load_dotenv(REPO / ".env", override=False)
+
+
+def resolve_fund_db_path() -> Path:
+    raw = Path(os.environ.get("FUND_DB_PATH") or "fund.db").expanduser()
+    return (raw if raw.is_absolute() else REPO / raw).resolve()
+
+
+API = os.environ.get("AIHF_API", "http://127.0.0.1:8000")
 UNIVERSE = Path(os.environ.get("AIHF_UNIVERSE_FILE", str(REPO / "docs" / "agent" / "universe.txt")))
 OUT_DIR = REPO / "logs" / "ops"
 LOG_DIR = REPO / "logs"
+FUND_DB_PATH = resolve_fund_db_path()
 BENCHMARK = os.environ.get("AIHF_BENCHMARK", "SPY")
 DEFAULT_CONNECTION = os.environ.get("AIHF_CONNECTION_NAME", "sub2api opencode go")
 DEFAULT_MODEL = os.environ.get("AIHF_MODEL", "deepseek-v4.1-flash")
@@ -385,14 +395,25 @@ def cmd_retention(args: argparse.Namespace) -> int:
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             print(f"retention plan rejected: {exc}", file=sys.stderr)
             return 2
-        applied = retention.apply_retention(plan)
+        try:
+            active_simulation_ids = retention.load_active_simulation_run_ids(FUND_DB_PATH)
+        except retention.RetentionStateError as exc:
+            print(f"retention active-run check failed: {exc}", file=sys.stderr)
+            return 2
+        applied = retention.apply_retention_with_state(plan, active_simulation_ids=active_simulation_ids)
     else:
+        try:
+            active_simulation_ids = retention.load_active_simulation_run_ids(FUND_DB_PATH)
+        except retention.RetentionStateError as exc:
+            print(f"retention active-run check failed: {exc}", file=sys.stderr)
+            return 2
         max_total_bytes = int(args.max_total_mb * 1024 * 1024)
         plan = retention.build_retention_plan(
             LOG_DIR,
             keep_days=args.keep_days,
             min_age_days=args.min_age_days,
             max_total_bytes=max_total_bytes,
+            active_simulation_ids=active_simulation_ids,
         )
         applied = None
         if args.plan_file:
