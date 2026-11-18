@@ -85,3 +85,28 @@ def test_recovery_marks_stale_cancelling_run_cancelled(tmp_path):
         assert row.final_nav == 1010.0
         assert row.completed_at
         assert "backend restart" in row.error_message.lower()
+
+
+def test_recovery_fails_prestart_pending_run(tmp_path):
+    db = str(tmp_path / "fund.db")
+    init_db(db)
+    with get_session(db) as session:
+        pending = _run(9, "pending")
+        pending.current_day = 0
+        session.add(pending)
+        session.commit()
+
+    recovered_at = datetime(2026, 11, 18, 1, 0, tzinfo=timezone.utc)
+    recovered = SimRunner.recover_orphaned_runs(db, recovered_at=recovered_at)
+    assert recovered == [9]
+
+    with get_session(db) as session:
+        row = session.get(SimRun, 9)
+        assert row.status == "failed"
+        assert row.completed_at == recovered_at.isoformat()
+        assert "pending" in row.error_message.lower()
+        assert "before any cycle" in row.error_message.lower()
+        assert row.current_day == 0
+        assert row.final_nav is None
+
+    assert SimRunner.recover_orphaned_runs(db, recovered_at=recovered_at) == []

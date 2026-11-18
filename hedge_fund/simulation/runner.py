@@ -527,20 +527,22 @@ class SimRunner:
     ) -> list[int]:
         """Recover persisted runs that no process-local worker can still own.
 
-        Orphaned ``running`` rows become ``failed``; rows already in
-        ``cancelling`` become ``cancelled`` because the user request is known.
+        Orphaned ``pending`` and ``running`` rows become ``failed``; rows
+        already in ``cancelling`` become ``cancelled`` because the user request
+        is known.
         """
         init_db(db_path)
         stamp = (recovered_at or datetime.now(timezone.utc)).isoformat()
         with get_session(db_path) as session:
             runs = session.execute(
                 select(SimRun)
-                .where(SimRun.status.in_(("running", "cancelling")))
+                .where(SimRun.status.in_(("pending", "running", "cancelling")))
                 .order_by(SimRun.id)
             ).scalars().all()
             recovered_ids = [run.id for run in runs]
             for run in runs:
                 was_cancelling = run.status == "cancelling"
+                was_pending = run.status == "pending"
                 run.status = "cancelled" if was_cancelling else "failed"
                 run.completed_at = stamp
                 if was_cancelling:
@@ -554,6 +556,11 @@ class SimRunner:
                     message = (
                         "Cancelled: backend restart recovered stale cancelling state "
                         f"at {stamp}; no active worker remains."
+                    )
+                elif was_pending:
+                    message = (
+                        "Interrupted: backend restart recovered stale pending state "
+                        f"before any cycle ran at {stamp}; no active worker remains."
                     )
                 else:
                     message = (
