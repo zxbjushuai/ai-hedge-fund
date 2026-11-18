@@ -180,8 +180,8 @@ Codex full access does **not** grant Linux root. The agent runs as user
 
 - No in-process scheduler for `research_app`; the daily pipeline is external.
 - Cache freshness is keyed by exact requested range; incremental updates pending.
-- Cache jobs and simulation runners are in-memory; stale `running` rows possible
-  after restart.
+- Cache jobs and simulation runners are in-memory; startup recovery fails stale
+  `pending`/`running` rows and converts stale `cancelling` rows to `cancelled`.
 - Simulation ticker cap is 50.
 - The Web API has no authentication; it is only safe behind localhost/SSH tunnel.
 - `Sub2API` cannot serve `deepseek-v4.1-flash` today.

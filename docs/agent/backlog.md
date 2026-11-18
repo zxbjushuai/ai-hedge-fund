@@ -13,9 +13,10 @@ and verified in one run. Update status with the date and commit hash.
 - `continue` = carried-book daily paper trading from a completed parent run.
 - `scripts/daily-pipeline.py` is a legacy/manual rolling-window tool (independent
   runs); it is not scheduled.
-- Backend startup fails stale `running` simulations, converts stale `cancelling`
-  rows to `cancelled` with their last NAV, and reports recovery/runtime counts
-  at `GET /dashboard/system/status`; cache jobs remain process-local.
+- Backend startup fails stale `pending` and `running` simulations, converts
+  stale `cancelling` rows to `cancelled` with their last NAV, and reports
+  recovery/runtime counts at `GET /dashboard/system/status`; cache jobs remain
+  process-local.
 - Quarterly metrics prefer SEC `10-Q`/`10-K`/`20-F` acceptance dates within a
   bounded report-date match; unmatched rows retain `estimated_45d`. PEAD only
   uses dated Yahoo earnings announcements and abstains when none are available.
@@ -176,7 +177,7 @@ conflicts; never auto-merge into `agent/daily`.
 Acceptance: report section in the daily doc; manual merge workflow documented.
 
 ### AIHF-020 — Recover pre-start pending simulations
-Status: open
+Status: done (2026-11-18, `58686df`; backend 431 tests, frontend 32 tests + lint/build). Startup recovery now includes `pending` rows left between row creation and worker start, marks them failed with a pending-specific restart message, preserves the day counter and absent NAV, and covers both the runner and FastAPI lifespan paths. Resume remains AIHF-019.
 Goal: handle `sim_run.status='pending'` rows left by a crash after row creation
 but before the background runner starts.
 Acceptance: startup recovery fails or resumes pending rows safely; regression

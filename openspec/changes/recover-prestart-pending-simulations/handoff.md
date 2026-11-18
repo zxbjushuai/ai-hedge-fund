@@ -33,8 +33,11 @@
 - `git diff --check` passed. `runner.py` and `test_recovery.py` already failed
   repository-wide Black/isort/flake8 checks at the base commit; this change did
   not reformat unrelated code.
+- `codex exec review --uncommitted` found no actionable correctness issues
+  (APPROVE). Log: `logs/agent/review-20261118-aihf020.log`.
 
 ## Follow-up
 
 - No new backlog item. Recovery counts are still not surfaced in the Web UI;
-  that is AIHF-021.
+  that is AIHF-021. Feature commit: `58686df`
+  (`fix(simulation): recover pre-start pending runs`).
