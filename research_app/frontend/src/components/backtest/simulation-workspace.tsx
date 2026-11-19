@@ -8,6 +8,7 @@ import { CachedUniverseSelector } from './cached-universe-selector';
 import { CoverageTimeline } from './coverage-timeline';
 import { SimResults } from './sim-results';
 import { SimActivityView } from './sim-activity';
+import { RuntimeStatusPanel } from './runtime-status';
 import { isVisibleLlmConnection } from '@/lib/llm-connection-policy';
 
 export type DataIntent = { tickers: string[]; benchmark: string; start: string; end: string; id: number };
@@ -188,6 +189,7 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   const benchmarkDays = benchmarkDates(details[benchmark]);
   return <div className="simulation-workspace">
     <div className="page-heading"><div><h1>Simulation</h1><p>Build an experiment from the data you have.</p></div><div className="segmented" aria-label="Simulation views"><button aria-pressed={tab === 'new'} onClick={() => setTab('new')}>New simulation</button><button aria-pressed={tab === 'running'} onClick={() => setTab('running')}>Running</button><button aria-pressed={tab === 'history'} onClick={() => { setTab('history'); setHistoryRevision(value => value + 1); }}>History</button></div></div>
+    <RuntimeStatusPanel active={active} refreshKey={revision} />
     <section hidden={tab !== 'running'}><h2 ref={runningHeading} tabIndex={-1}>Running simulation</h2>{!run && <p>No simulation selected. Start a simulation or track one from History.</p>}{run && <section className="run-banner" aria-live="polite"><div><strong>Simulation #{run.id}: {run.status?.status ?? 'starting'}</strong><p>{run.status ? `${run.status.current_day} / ${run.status.total_days} days` : 'Waiting for status…'}</p>{run.status?.status === 'cancelled' ? <p>Run cancelled. Completed cycles remain available.</p> : run.status?.error_message && <p role="alert">{run.status.error_message}</p>}</div>{running && <progress aria-label="Simulation progress" value={run.status?.current_day ?? 0} max={run.status?.total_days || 1} />}{running && <Button variant="outline" disabled={cancelBusy || run.status?.status === 'cancelling'} onClick={() => void cancelRun(run.id)}>{cancelBusy || run.status?.status === 'cancelling' ? 'Cancelling…' : 'Cancel run'}</Button>}{run.status && <Button onClick={() => { setTab('history'); void viewResult(run.id); }}>View result</Button>}{pollError && <div role="alert">Status unavailable: {pollError}<Button variant="outline" onClick={() => setPollRevision(value => value + 1)}>Retry status</Button></div>}</section>}{run && <><p>Estimated model calls: {run.status?.execution_config?.preflight?.estimated_llm_calls ?? 'Not recorded'}. Retries can exceed this estimate.</p><SimActivityView status={run.status} /></>}</section>
     <div hidden={tab !== 'new'}>
       <div className="simulation-grid"><div className="simulation-main">

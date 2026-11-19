@@ -2,6 +2,39 @@ import { API_BASE_URL } from './api-config';
 
 export type ApiError = Error & { status?: number; detail?: unknown };
 
+export interface SystemStatus {
+  startup_recovery: {
+    completed_at: string | null;
+    orphaned_simulations_recovered: number;
+    orphaned_simulations_failed: number;
+    orphaned_simulations_cancelled: number;
+    simulation_ids: number[];
+    orphaned_cache_jobs_failed: number;
+    cache_job_ids: string[];
+  };
+  simulations: {
+    pending: number;
+    running: number;
+    cancelling: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+  };
+  cache_jobs: {
+    total: number;
+    active: number;
+    by_status: {
+      pending: number;
+      running: number;
+      cancelling: number;
+      completed: number;
+      partial: number;
+      failed: number;
+      cancelled: number;
+    };
+  };
+}
+
 async function requireOk(res: Response): Promise<void> {
   if (res.ok) return;
   const body = await res.json().catch(() => ({}));
@@ -584,6 +617,12 @@ export const simulationApi = {
 
   async cancelSim(simId: number): Promise<SimStatus> {
     const res = await fetch(`${API_BASE_URL}/dashboard/sim/${simId}/cancel`, { method: 'POST' });
+    await requireOk(res);
+    return res.json();
+  },
+
+  async getSystemStatus(): Promise<SystemStatus> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/system/status`);
     await requireOk(res);
     return res.json();
   },

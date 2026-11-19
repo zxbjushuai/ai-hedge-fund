@@ -21,6 +21,18 @@ beforeEach(() => {
   vi.spyOn(simulationApi, 'getCachedSecurity').mockImplementation(async ticker => details(ticker));
   vi.spyOn(simulationApi, 'listUniverses').mockResolvedValue({ universes: [] });
   vi.spyOn(simulationApi, 'listSimRuns').mockResolvedValue({ runs: [] });
+  vi.spyOn(simulationApi, 'getSystemStatus').mockResolvedValue({
+    startup_recovery: {
+      completed_at: '2026-11-19T01:03:58+00:00', orphaned_simulations_recovered: 0,
+      orphaned_simulations_failed: 0, orphaned_simulations_cancelled: 0,
+      simulation_ids: [], orphaned_cache_jobs_failed: 0, cache_job_ids: [],
+    },
+    simulations: { pending: 0, running: 0, cancelling: 0, completed: 0, failed: 0, cancelled: 0 },
+    cache_jobs: {
+      total: 0, active: 0,
+      by_status: { pending: 0, running: 0, cancelling: 0, completed: 0, partial: 0, failed: 0, cancelled: 0 },
+    },
+  });
   vi.spyOn(simulationApi, 'listLlmOptions').mockResolvedValue({ providers: [{ id: 12, name: 'Test connection', provider_type: 'openai', vendor: 'openai', protocol: 'openai_chat_completions', models: [{ model_id: 'small', display_name: 'Small' }] }] });
   vi.spyOn(simulationApi, 'preflightSim').mockResolvedValue(preflight);
   vi.spyOn(simulationApi, 'runSim').mockResolvedValue({ sim_id: 42, status: 'running' });

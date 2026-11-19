@@ -52,6 +52,15 @@
 .toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:14px 0; }
 .toolbar > input { flex:1; min-width:180px; }
 .toolbar select { min-width:140px; }
+.runtime-status { background:hsl(var(--card)); border:1px solid hsl(var(--border)); border-radius:10px; padding:18px 22px; margin-bottom:24px; }
+.runtime-status-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.runtime-status-heading .quiet { margin-top:0; }
+.runtime-status-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin:14px 0 0; }
+.runtime-status-grid > div { min-width:0; padding-left:12px; border-left:3px solid hsl(var(--border)); }
+.runtime-status-grid dt { color:hsl(var(--muted-foreground)); font-size:.78rem; }
+.runtime-status-grid dd { margin:4px 0; font-size:1.25rem; font-weight:650; }
+.runtime-status-grid p { margin:4px 0; font-size:.78rem; overflow-wrap:anywhere; }
+.runtime-status-grid .quiet { margin:4px 0; }
 .check-label { display:flex; align-items:flex-start; gap:8px; font-size:.82rem; margin:14px 0; }
 .check-label input { margin-top:3px; }
 .table-scroll { overflow-x:auto; max-width:100%; }
@@ -100,7 +109,7 @@ ul.notice { padding-left:30px; list-style:disc; } ul.notice li + li { margin-top
  .brand { padding:0 4px 16px; } .workspace-nav nav { display:flex; } .workspace-nav nav button { justify-content:center; padding:10px 6px; font-size:.8rem; }
  .workspace-nav nav button small { display:none; } .nav-footer { padding:0; } .nav-footer p { display:none; } .nav-footer button { margin-top:12px; }
  #workspace-main { margin-left:0; padding:22px 14px; } .page-heading { align-items:flex-start; flex-direction:column; gap:12px; }
- .work-section,.configuration-panel,.review-panel,.history-section { padding:16px; } .section-heading { flex-wrap:wrap; }
+ .runtime-status,.work-section,.configuration-panel,.review-panel,.history-section { padding:16px; } .runtime-status-heading { flex-direction:column; } .runtime-status-grid { grid-template-columns:minmax(0,1fr); } .section-heading { flex-wrap:wrap; }
  .config-fields { grid-template-columns:minmax(0,1fr); } h1 { font-size:1.65rem; } .timeline-axis { margin-left:70px; } .timeline-row { grid-template-columns:60px minmax(0,1fr); }
 }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; } }
