@@ -20,6 +20,8 @@
   `codex exec review --uncommitted` attempt could not reach its OpenAI
   transport; the Sub2API fallback completed with no actionable findings.
 
+Feature commit: `7a09cc3` (`feat(ui): surface runtime status in simulation page`).
+
 ## Follow-up
 
 - The panel is snapshot-based and does not poll. Users can refresh it manually

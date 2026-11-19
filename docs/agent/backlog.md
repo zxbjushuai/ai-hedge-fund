@@ -17,6 +17,9 @@ and verified in one run. Update status with the date and commit hash.
   stale `cancelling` rows to `cancelled` with their last NAV, and reports
   recovery/runtime counts at `GET /dashboard/system/status`; cache jobs remain
   process-local.
+- The Simulation page consumes `/dashboard/system/status` and shows startup
+  recovery, simulation, and process-local cache-job counts with loading, error,
+  retry, and manual-refresh states.
 - Quarterly metrics prefer SEC `10-Q`/`10-K`/`20-F` acceptance dates within a
   bounded report-date match; unmatched rows retain `estimated_45d`. PEAD only
   uses dated Yahoo earnings announcements and abstains when none are available.
@@ -47,8 +50,8 @@ Goal: on backend startup, mark orphaned `sim_run.status='running'` rows as faile
 or resumable; restore or clean in-memory cache jobs. Add a status endpoint/field.
 Acceptance: restart during a run no longer leaves a permanently running row;
 tests cover recovery.
-Follow-up: pending rows created before the worker starts are tracked in AIHF-020;
-the Web UI does not yet consume the new status endpoint (AIHF-021).
+Follow-up: pre-start pending rows were covered by AIHF-020, and the Simulation
+page now consumes the status endpoint (AIHF-021).
 
 ### AIHF-004 — Tests for the daily path
 Status: done (2026-11-10, `108b3c3`; backend 348 tests, frontend 28 tests + lint/build). Adds a deterministic no-network integration test spanning catalog selection, cache-job prices, preflight, background simulation, status/result, benchmark NAV, trade isolation, and cycle audit persistence.
@@ -184,7 +187,7 @@ Acceptance: startup recovery fails or resumes pending rows safely; regression
 test covers the create-before-start crash window.
 
 ### AIHF-021 — Surface runtime recovery in the Web UI
-Status: open
+Status: done (2026-11-19, `7a09cc3`; backend 431 tests, frontend 35 tests + lint/build). Adds a typed system-status service, a Simulation-page runtime panel with loading/error/retry/manual-refresh states, startup recovery and simulation counts, and process-local cache-job status. Component and workspace tests cover the new behavior; the panel is snapshot-based and does not poll.
 Goal: display startup recovery counts and current running/failed simulation plus
 cache-job status from `/dashboard/system/status`.
 Acceptance: status is visible with loading/error states; frontend tests cover it.
