@@ -23,6 +23,8 @@ and verified in one run. Update status with the date and commit hash.
 - Quarterly metrics prefer SEC `10-Q`/`10-K`/`20-F` acceptance dates within a
   bounded report-date match; unmatched rows retain `estimated_45d`. PEAD only
   uses dated Yahoo earnings announcements and abstains when none are available.
+- Failed persona bootstrap attempts keep their original event identity, so
+  retry backoff and non-retryable suppression apply until a genuinely new event.
 - Retention reads active simulation state read-only, protects
   `pending`/`running`/`cancelling` run logs, and rechecks state at apply time.
 
@@ -143,7 +145,7 @@ the ad-hoc cached universe.
 Acceptance: reproducible universe; documented; tests.
 
 ### AIHF-012 — Persona bootstrap retry defect
-Status: open
+Status: done (2026-11-20, `dd67319`; backend 434 tests, frontend 35 tests + lint/build). Stores the initial `bootstrap` or `universe_entry` reason in run-scoped persona state so failed cycle-1 attempts keep their fingerprint through backoff and non-retryable suppression; three deterministic regression tests cover retry, terminal failure, and genuine later entry. Durable restoration remains part of AIHF-019.
 Goal: fix cycle-2 relabeling that bypasses retry backoff; add regression test.
 Files: `hedge_fund/simulation/persona_state.py`.
 

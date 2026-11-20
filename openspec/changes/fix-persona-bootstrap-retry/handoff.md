@@ -17,6 +17,7 @@ Backlog item: AIHF-012.
 
 ## Validation
 
+- Code commit: `dd67319` `fix(simulation): preserve persona bootstrap retry identity`.
 - Focused regression file: `3 passed` for the new retry/backoff, non-retryable,
   and later-entry cases.
 - Backend: `.venv/bin/python -m pytest research_app/backend hedge_fund -q` ->
