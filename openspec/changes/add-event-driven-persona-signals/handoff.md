@@ -78,11 +78,11 @@ handoff, with the explicit follow-up defects below.
   signal-day bar. Orders still require the exact execution-day open, and held
   positions require the exact execution-day close. Do not replace either with
   the stale signal mark. Upstream introduced the lookback in `2a45575`.
-- Known retry defect (TODO in `persona_state.py`): if cycle-1 bootstrap fails,
-  cycle 2 may relabel the same initial attempt as `universe_entry`, changing the
-  fingerprint and bypassing backoff or non-retryable suppression. The passing
-  retry tests do not establish correctness of this particular transition.
-  Fix and regression-test this before claiming complete retry conformance.
+- Retry identity defect resolved on 2026-11-20 (AIHF-012,
+  `fix-persona-bootstrap-retry`). Run-scoped state now preserves the initial
+  `bootstrap` or `universe_entry` reason across failed attempts, and regression
+  tests cover retryable backoff, non-retryable suppression, and genuine later
+  universe entry.
 - Filing timestamps in the Yahoo metrics cache are `report_period + 45 days`
   (`estimated_45d`), not verified publication timestamps. `new_filing` currently
   reflects visibility under this approximation. TODOs at cache ingestion,

@@ -166,6 +166,67 @@ def test_retryable_failure_uses_1_2_cycle_backoff_and_preserves_prior(tmp_path):
     assert llm.calls == 4
 
 
+def test_failed_bootstrap_keeps_identity_and_honors_custom_backoff(tmp_path):
+    llm = SequenceLlm([TimeoutError(), RESPONSE])
+    engine = PersonaSignalEngine(
+        PersonaRefreshPolicy(retry_backoff_trading_days=[2]),
+    )
+    agent = _agent(tmp_path, llm)
+    data = EventData()
+
+    failed, first = _predict(engine, agent, data, 1, "2024-01-02", mark=100)
+    waiting, second = _predict(engine, agent, data, 2, "2024-01-03", mark=100)
+    recovered, third = _predict(engine, agent, data, 3, "2024-01-04", mark=100)
+
+    assert failed.status == waiting.status == "abstained"
+    assert first.trigger_reasons == second.trigger_reasons == third.trigger_reasons == ["bootstrap"]
+    assert first.next_retry_cycle == second.next_retry_cycle == 3
+    assert second.attempt_status == "not_attempted"
+    assert second.provenance == "unavailable"
+    assert recovered.status == "produced"
+    assert third.provenance == "refreshed"
+    assert llm.calls == 2
+
+
+def test_non_retryable_bootstrap_waits_for_a_new_event(tmp_path):
+    llm = SequenceLlm([AuthError(), RESPONSE])
+    engine = PersonaSignalEngine(PersonaRefreshPolicy())
+    agent = _agent(tmp_path, llm)
+    data = EventData()
+
+    _, failed = _predict(engine, agent, data, 1, "2024-01-02", mark=100)
+    _, waiting = _predict(engine, agent, data, 2, "2024-01-03", mark=100)
+    data.new_filing_for.add("AAPL")
+    _, refreshed = _predict(engine, agent, data, 3, "2024-02-02", mark=100)
+
+    assert failed.failure["category"] == "authentication"
+    assert failed.next_retry_cycle is None
+    assert waiting.trigger_reasons == ["bootstrap"]
+    assert waiting.attempt_status == "not_attempted"
+    assert refreshed.provenance == "refreshed"
+    assert llm.calls == 2
+
+
+def test_persona_first_evaluated_after_cycle_one_enters_as_universe_entry(tmp_path):
+    llm = SequenceLlm([RESPONSE, RESPONSE])
+    engine = PersonaSignalEngine(PersonaRefreshPolicy())
+    agent = _agent(tmp_path, llm)
+    data = EventData()
+
+    engine.begin_cycle(1)
+    engine.predict(agent, "MSFT", "2024-01-02", 100, data)
+    engine.finish_cycle()
+
+    engine.begin_cycle(2)
+    engine.predict(agent, "AAPL", "2024-01-03", 100, data)
+    event = engine.finish_cycle()[0]
+
+    assert event.ticker == "AAPL"
+    assert event.trigger_reasons == ["universe_entry"]
+    assert event.provenance == "refreshed"
+    assert llm.calls == 2
+
+
 def test_retryable_failure_backoff_reaches_and_stays_at_five_cycles(tmp_path):
     llm = SequenceLlm([RESPONSE] + [TimeoutError()] * 5)
     engine = PersonaSignalEngine(PersonaRefreshPolicy())

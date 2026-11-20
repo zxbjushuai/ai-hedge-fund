@@ -23,6 +23,7 @@ from hedge_fund.signals.llm_agent import LLMAgent
 @dataclass
 class _PersonaState:
     signal: Signal | None = None
+    initial_refresh_reason: str | None = None
     source_signal_date: str | None = None
     snapshot_hash: str | None = None
     prompt_key: str | None = None
@@ -189,11 +190,11 @@ class PersonaSignalEngine:
 
         reasons: list[str] = []
         if state.signal is None:
-            # TODO(event-driven-persona): distinguish a ticker becoming eligible from
-            # a failed bootstrap attempt.  Today a cycle-1 refresh failure has no
-            # effective signal, so cycle 2 is relabeled as universe_entry; that changes
-            # the event fingerprint and can bypass the configured retry backoff.
-            reasons.append("bootstrap" if self._cycle_number == 1 else "universe_entry")
+            if state.initial_refresh_reason is None:
+                state.initial_refresh_reason = (
+                    "bootstrap" if self._cycle_number == 1 else "universe_entry"
+                )
+            reasons.append(state.initial_refresh_reason)
             if earnings_date:
                 reasons.append("actionable_earnings")
         else:

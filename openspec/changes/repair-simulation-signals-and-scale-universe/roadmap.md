@@ -168,8 +168,9 @@ for validation evidence and the bootstrap-failure-to-universe-entry retry defect
 
 Follow-up priorities:
 
-1. Fix initial-attempt identity so bootstrap failure cannot bypass backoff when
-   the next cycle is mislabeled universe entry; add the missing regression case.
+1. ~~Fix initial-attempt identity so bootstrap failure cannot bypass backoff when
+   the next cycle is mislabeled universe entry; add the missing regression case.~~
+   Done 2026-11-20 (AIHF-012, `fix-persona-bootstrap-retry`).
 2. Define startup eligibility for partial-history/newly listed companies.
 3. Replace estimated quarterly +45-day filing visibility with sourced timestamps;
    keep runtime detection and preflight estimation consistent.
