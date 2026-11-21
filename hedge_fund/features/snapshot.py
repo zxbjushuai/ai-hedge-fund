@@ -21,13 +21,26 @@ from pydantic import BaseModel
 
 from hedge_fund.data.protocol import DataClient
 
-# An agent can't say anything defensible about a company with less history
-# than this (one year of ttm rows).
+# Default minimum filed TTM periods; a mandate may lower it explicitly for
+# newly listed companies, but four quarters remains the conservative default.
 MIN_PERIODS = 4
 
 
 class InsufficientData(ValueError):
     """Not enough point-in-time history to build a snapshot."""
+
+    def __init__(
+        self, ticker: str, as_of: str, available_periods: int,
+        required_periods: int,
+    ) -> None:
+        self.ticker = ticker
+        self.as_of = as_of
+        self.available_periods = available_periods
+        self.required_periods = required_periods
+        super().__init__(
+            f"{ticker} as of {as_of}: only {available_periods} filed periods "
+            f"(need {required_periods})"
+        )
 
 
 class PeriodFundamentals(BaseModel):
@@ -120,21 +133,23 @@ def build_snapshot(
     as_of: str,
     data_client: DataClient,
     periods: int = 20,
+    min_periods: int = MIN_PERIODS,
 ) -> FundamentalsSnapshot:
     """Build the point-in-time snapshot for (ticker, as_of).
 
-    Raises InsufficientData if fewer than MIN_PERIODS filed periods exist.
+    Raises InsufficientData if fewer than min_periods filed periods exist.
     Data-layer failures propagate (fail loud) — a broken snapshot must never
     silently become a neutral view.
     """
+    if type(min_periods) is not int or not 1 <= min_periods <= periods:
+        raise ValueError(
+            f"minimum periods must be an integer between 1 and {periods}"
+        )
     metrics = data_client.get_financial_metrics(
         ticker, as_of, period="ttm", limit=periods,
     )
-    if len(metrics) < MIN_PERIODS:
-        raise InsufficientData(
-            f"{ticker} as of {as_of}: only {len(metrics)} filed periods "
-            f"(need {MIN_PERIODS})"
-        )
+    if len(metrics) < min_periods:
+        raise InsufficientData(ticker, as_of, len(metrics), min_periods)
 
     # Market cap comes from the most recent FILED metrics row. Deliberately
     # NOT data_client.get_market_cap(): that prefers company_facts.market_cap,

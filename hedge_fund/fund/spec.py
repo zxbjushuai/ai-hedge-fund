@@ -44,6 +44,7 @@ class PersonaRefreshPolicy(BaseModel):
 
     valuation_change_pct: float = Field(default=20.0, gt=0)
     max_age_days: int = Field(default=90, ge=1)
+    minimum_history_periods: int = Field(default=4, ge=1, le=20)
     retry_backoff_trading_days: list[int] = Field(
         default_factory=lambda: [1, 2, 4, 5], min_length=1,
     )

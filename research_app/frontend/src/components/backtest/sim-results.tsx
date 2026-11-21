@@ -68,6 +68,7 @@ export function SimResults({ result }: Props) {
               <p className="text-muted-foreground">
                 Persona refresh: {result.persona_refresh_policy.valuation_change_pct}% valuation move
                 {' / '}{result.persona_refresh_policy.max_age_days} days maximum age
+                {' / '}{result.persona_refresh_policy.minimum_history_periods} filed periods minimum
               </p>
             )}
             {result.warnings?.map((warning, index) => (

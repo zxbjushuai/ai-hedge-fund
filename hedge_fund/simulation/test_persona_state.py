@@ -21,7 +21,7 @@ from hedge_fund.signals import BuffettAgent
 from hedge_fund.simulation.audit import persist_completed_cycle
 from hedge_fund.simulation.cancellation import SimulationCancelled
 from hedge_fund.simulation.persona_state import PersonaSignalEngine
-from hedge_fund.simulation.runner import estimate_persona_event_schedule
+from hedge_fund.simulation.runner import estimate_persona_event_schedule, validate_cached_data
 
 
 RESPONSE = json.dumps({"signal": "bullish", "confidence": 75, "reasoning": "r"})
@@ -64,9 +64,10 @@ class AuthError(Exception):
 
 
 class EventData:
-    def __init__(self):
+    def __init__(self, metric_count=4):
         self.new_filing_for: set[str] = set()
         self.earnings: dict[str, list[EarningsRecord]] = {}
+        self.metric_count = metric_count
 
     def get_financial_metrics(self, ticker, end_date, period="ttm", limit=20):
         dates = ["2024-01-01", "2023-10-01", "2023-07-01", "2023-04-01"]
@@ -79,7 +80,7 @@ class EventData:
                 book_value_per_share=10,
             )
             for value in dates if value <= end_date
-        ][:limit]
+        ][:min(limit, self.metric_count)]
 
     def get_company_facts(self, ticker):
         return None
@@ -186,6 +187,34 @@ def test_failed_bootstrap_keeps_identity_and_honors_custom_backoff(tmp_path):
     assert recovered.status == "produced"
     assert third.provenance == "refreshed"
     assert llm.calls == 2
+
+
+def test_partial_history_requires_explicit_lower_threshold(tmp_path):
+    data = EventData(metric_count=3)
+
+    default_llm = SequenceLlm([])
+    default_engine = PersonaSignalEngine(PersonaRefreshPolicy())
+    default_signal, default_event = _predict(
+        default_engine, _agent(tmp_path / "default", default_llm),
+        data, 1, "2024-01-02", mark=100,
+    )
+
+    assert default_signal.status == "abstained"
+    assert "only 3 filed periods (need 4)" in default_event.failure["message"]
+    assert default_llm.calls == 0
+
+    custom_llm = SequenceLlm([RESPONSE])
+    custom_engine = PersonaSignalEngine(
+        PersonaRefreshPolicy(minimum_history_periods=3),
+    )
+    custom_signal, custom_event = _predict(
+        custom_engine, _agent(tmp_path / "custom", custom_llm),
+        data, 1, "2024-01-02", mark=100,
+    )
+
+    assert custom_signal.status == "produced"
+    assert custom_event.trigger_reasons == ["bootstrap"]
+    assert custom_llm.calls == 1
 
 
 def test_non_retryable_bootstrap_waits_for_a_new_event(tmp_path):
@@ -393,6 +422,54 @@ def test_event_schedule_estimate_coalesces_and_uses_exact_threshold(tmp_path):
     assert estimate["estimated_llm_calls"] == 2
     assert estimate["event_reason_counts"]["bootstrap"] == 1
     assert estimate["event_reason_counts"]["valuation_change"] == 1
+
+
+def test_preflight_uses_configured_minimum_history(tmp_path):
+    db = tmp_path / "partial-history.db"
+    days = ["2024-01-02", "2024-01-03", "2024-01-04"]
+    with get_session(str(db)) as session:
+        for ticker in ("AAPL", "SPY"):
+            for day in days:
+                session.add(PriceCache(
+                    ticker=ticker, date=day, open=100, high=100,
+                    low=100, close=100, volume=1,
+                ))
+        for index, filing_date in enumerate(
+            ("2023-04-01", "2023-07-01", "2023-10-01")
+        ):
+            metric = FinancialMetrics(
+                ticker="AAPL", report_period=f"2023-0{index + 1}-01", period="ttm",
+            )
+            session.add(MetricsCache(
+                ticker="AAPL", report_period=metric.report_period,
+                filing_date=filing_date, filing_date_source="test",
+                data=metric.model_dump_json(exclude={"ticker"}),
+            ))
+        session.commit()
+
+    default = estimate_persona_event_schedule(
+        str(db), ["AAPL"], days, {"buffett"}, PersonaRefreshPolicy(),
+    )
+    custom = estimate_persona_event_schedule(
+        str(db), ["AAPL"], days, {"buffett"},
+        PersonaRefreshPolicy(minimum_history_periods=3),
+    )
+    assert default["estimated_refresh_events"] == 0
+    assert custom["estimated_refresh_events"] == 1
+    assert custom["event_reason_counts"]["bootstrap"] == 1
+
+    errors, warnings = validate_cached_data(
+        str(db), ["AAPL"], "SPY", days[0], days[-1], False,
+        minimum_history_periods=3,
+    )
+    assert errors == []
+    assert not any("minimum history" in warning for warning in warnings)
+
+    _, warnings = validate_cached_data(
+        str(db), ["AAPL"], "SPY", days[0], days[-1], False,
+        minimum_history_periods=4,
+    )
+    assert any("requires 4" in warning for warning in warnings)
 
 
 def test_persona_state_is_persisted_with_cycle_atomically(tmp_path):

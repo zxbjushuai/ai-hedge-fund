@@ -11,7 +11,7 @@ const details = (ticker: string, dates = days): CachedSecurityDetail => ({ ticke
   earnings: [{ report_period: '2023-09-30', announcement_date: '2023-11-01', actual_eps: 2, estimated_eps: 1, surprise_pct: 100, source: 'test' }], coverage_history: [] });
 const item = (ticker: string): CachedSecurityItem => ({ ticker, name: `${ticker} company`, exchange: 'NYSE', asset_type: 'equity', latest_close: 10, latest_adjusted_close: 10, latest_volume: 1, latest_date: days[3], prices: { min: days[0], max: days[3], count: 4, price_modes: ['raw'] }, metrics: { min: '2023-01-01', max: '2023-04-01', count: 4 }, earnings: { min: '2023-11-01', max: '2023-11-01', count: 1 } });
 const props = () => ({ active: true, revision: 0, onRefresh: vi.fn(), onData: vi.fn(), onProviders: vi.fn() });
-const preflight = { estimated_llm_calls: 3, estimate_kind: 'event_schedule_upper_bound' as const, estimated_refresh_events: 1, persona_count: 3, event_reason_counts: { bootstrap: 1 }, persona_refresh_policy: { valuation_change_pct: 20, max_age_days: 90, retry_backoff_trading_days: [1, 2, 4, 5] }, provider: 'test', model: 'small', benchmark: 'SPY', trading_days: 4, enabled_models: ['buffett'], warnings: [] };
+const preflight = { estimated_llm_calls: 3, estimate_kind: 'event_schedule_upper_bound' as const, estimated_refresh_events: 1, persona_count: 3, event_reason_counts: { bootstrap: 1 }, persona_refresh_policy: { valuation_change_pct: 20, max_age_days: 90, retry_backoff_trading_days: [1, 2, 4, 5], minimum_history_periods: 4 }, provider: 'test', model: 'small', benchmark: 'SPY', trading_days: 4, enabled_models: ['buffett'], warnings: [] };
 
 beforeEach(() => {
   localStorage.clear();
@@ -109,6 +109,7 @@ it('starts empty, never fetches catalog, and submits only once after explicit re
   fireEvent.click(screen.getByRole('button', { name: 'Review simulation' }));
   await screen.findByRole('button', { name: 'Confirm and run' });
   expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Review simulation' }));
+  expect(screen.getByText(/History >= 4 filed periods/)).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Model concurrency'), { target: { value: '9' } });
   expect((screen.getByRole('button', { name: 'Confirm and run' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText('Model concurrency'), { target: { value: '4' } });

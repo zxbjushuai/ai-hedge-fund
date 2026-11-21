@@ -107,6 +107,7 @@ def _simulation_preflight(data: SimRunRequest, resolved_llm=None) -> dict:
     require_earnings = any(model.name == "pead" for strategy in spec.strategies for model in strategy.models)
     errors, warnings = validate_cached_data(
         _DB_PATH, tickers, benchmark, start_date, end_date, require_earnings,
+        minimum_history_periods=spec.persona_refresh.minimum_history_periods,
     )
     if errors:
         raise HTTPException(status_code=422, detail={

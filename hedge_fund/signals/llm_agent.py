@@ -30,7 +30,7 @@ import json
 from hedge_fund.data.protocol import DataClient
 from hedge_fund.failures import classify_llm_failure, safe_remote_error_code
 from hedge_fund.simulation.observation import emit, HTTP_SLOTS, CURRENT_CALL
-from hedge_fund.features.snapshot import FundamentalsSnapshot, InsufficientData, build_snapshot
+from hedge_fund.features.snapshot import FundamentalsSnapshot, InsufficientData, MIN_PERIODS, build_snapshot
 from hedge_fund.llm import LLMClient, PromptCache, extract_json, make_llm, prompt_key
 from hedge_fund.models import Signal
 from hedge_fund.signals.base import AlphaModel
@@ -147,14 +147,17 @@ class LLMAgent(AlphaModel):
         """The persona — every subclass must define its voice."""
         raise NotImplementedError(f"{type(self).__name__} must define get_system_prompt()")
 
-    def build_snapshot(self, ticker: str, date: str, data_client: DataClient) -> FundamentalsSnapshot:
+    def build_snapshot(
+        self, ticker: str, date: str, data_client: DataClient,
+        min_periods: int = MIN_PERIODS,
+    ) -> FundamentalsSnapshot:
         """What this persona is allowed to know. Default: the shared
         point-in-time fundamentals snapshot — right for value/quality
         personas. Override for personas that reason over different data
         (macro, news); when a second snapshot TYPE exists, extract the
         implicit interface (ticker/as_of/content_hash/render) into a
         Protocol — not before."""
-        return build_snapshot(ticker, date, data_client)
+        return build_snapshot(ticker, date, data_client, min_periods=min_periods)
 
     def build_user_prompt(
         self, snapshot: FundamentalsSnapshot, event_context: dict | None = None,

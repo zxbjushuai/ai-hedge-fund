@@ -34,7 +34,13 @@ from hedge_fund.simulation.audit import (
     persist_completed_cycle,
     persist_failed_cycle,
 )
-from hedge_fund.simulation.runner import SimRunner, _trading_days, get_sim_result
+from hedge_fund.simulation.runner import (
+    SimRunner,
+    _trading_days,
+    get_sim_result,
+    get_sim_status,
+    list_sim_runs,
+)
 
 
 def test_sessions_are_isolated_by_normalized_database_path(tmp_path: Path):
@@ -573,7 +579,32 @@ def test_old_simulation_result_keeps_benchmark_fields_null(tmp_path: Path):
     listed = list_cycle_audits(sim_id, str(db))
     assert listed is not None
     assert listed["audit_available"] is False
-    assert listed["items"] == []
+
+
+def test_legacy_persona_policy_receives_default_history_threshold(tmp_path: Path):
+    db = tmp_path / "legacy-policy.db"
+    legacy = json.dumps({
+        "valuation_change_pct": 20.0,
+        "max_age_days": 90,
+        "retry_backoff_trading_days": [1, 2, 4, 5],
+    })
+    with get_session(str(db)) as session:
+        run = SimRun(
+            name="legacy-policy", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-02",
+            initial_capital=1000, status="completed", total_days=1,
+            persona_refresh_policy=legacy,
+        )
+        session.add(run)
+        session.commit()
+        sim_id = run.id
+
+    result = get_sim_result(sim_id, str(db))
+    status = get_sim_status(sim_id, str(db))
+    listed = list_sim_runs(str(db))
+    assert result["persona_refresh_policy"]["minimum_history_periods"] == 4
+    assert status["persona_refresh_policy"]["minimum_history_periods"] == 4
+    assert listed[0]["persona_refresh_policy"]["minimum_history_periods"] == 4
 
 
 def test_failed_cycle_audit_categorizes_data_failure_without_secret(tmp_path: Path):

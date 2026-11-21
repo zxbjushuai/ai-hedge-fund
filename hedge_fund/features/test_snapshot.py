@@ -57,8 +57,24 @@ def test_as_of_passes_through_to_data_client():
 
 def test_insufficient_data_raises():
     client = MockDataClient(metrics=_history(3))  # below MIN_PERIODS
-    with pytest.raises(InsufficientData):
+    with pytest.raises(InsufficientData) as exc_info:
         build_snapshot("TEST", "2025-01-15", client)
+    assert exc_info.value.available_periods == 3
+    assert exc_info.value.required_periods == 4
+
+
+def test_custom_minimum_periods_allows_partial_history():
+    client = MockDataClient(metrics=_history(3))
+    snap = build_snapshot("TEST", "2025-01-15", client, min_periods=3)
+    assert len(snap.periods) == 3
+    assert snap.periods[0].report_period == "2024-12-31"
+
+
+def test_minimum_periods_must_be_usable():
+    client = MockDataClient(metrics=_history())
+    for value in (0, 21):
+        with pytest.raises(ValueError, match="minimum periods"):
+            build_snapshot("TEST", "2025-01-15", client, min_periods=value)
 
 
 def test_aggregates():

@@ -241,6 +241,7 @@ export interface SimPreflight {
 export interface PersonaRefreshPolicy {
   valuation_change_pct: number;
   max_age_days: number;
+  minimum_history_periods: number;
   retry_backoff_trading_days: number[];
 }
 

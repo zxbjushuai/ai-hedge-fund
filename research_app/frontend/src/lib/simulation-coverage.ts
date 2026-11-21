@@ -60,7 +60,7 @@ export function analyzeCoverage(tickers: string[], benchmark: string, details: D
     if (missingClose.length) warnings.push(`${ticker}: ${missingClose.length} days without a close after prices begin. If held, the simulation may fail.`);
     const metrics = detail?.metrics.filter(row => row.filing_date <= (days[0] ?? range.start)).length ?? 0;
     const earnings = detail?.earnings.filter(row => row.announcement_date <= range.end && row.surprise_pct != null && row.surprise_pct !== 0).length ?? 0;
-    if (metrics < 4) warnings.push(`${ticker}: ${metrics} visible financial records at the first signal date; LLM analysts may abstain until eligible.`);
+    if (metrics < 4) warnings.push(`${ticker}: ${metrics} visible financial records at the first signal date; the default persona policy requires four, and preflight shows the configured threshold.`);
     if (!earnings) warnings.push(`${ticker}: no actionable cached earnings by the end date. Review preflight for strategy availability.`);
     return { ticker, start: first, end: last, leading, missingOpen, missingClose, metrics, earnings };
   });

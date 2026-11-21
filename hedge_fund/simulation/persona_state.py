@@ -160,14 +160,11 @@ class PersonaSignalEngine:
 
         state = self._states.setdefault(key, _PersonaState())
         try:
-            snapshot = agent.build_snapshot(ticker, as_of, data_client)
+            snapshot = agent.build_snapshot(
+                ticker, as_of, data_client,
+                min_periods=self.policy.minimum_history_periods,
+            )
         except InsufficientData as exc:
-            # TODO(event-driven-persona): define an explicit startup eligibility
-            # policy for newly listed and partial-history securities.  The current
-            # bootstrap path requires a recent mark plus four visible quarterly
-            # periods; until then LLM analysts abstain even though independent quant
-            # models may still trade the ticker.  Decide whether future inputs such
-            # as S-1 history can support a bounded-confidence initial opinion.
             signal = self._unavailable(agent, ticker, as_of, str(exc))
             event = self._event(
                 key, state, signal, "unavailable", [], "abstained",

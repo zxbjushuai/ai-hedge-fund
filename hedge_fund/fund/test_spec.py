@@ -59,6 +59,7 @@ def test_defaults_applied():
     assert spec.persona_refresh.valuation_change_pct == 20.0
     assert spec.persona_refresh.max_age_days == 90
     assert spec.persona_refresh.retry_backoff_trading_days == [1, 2, 4, 5]
+    assert spec.persona_refresh.minimum_history_periods == 4
 
 
 def test_persona_refresh_policy_is_configurable_and_validated():
@@ -68,14 +69,26 @@ def test_persona_refresh_policy_is_configurable_and_validated():
             "valuation_change_pct": 10,
             "max_age_days": 30,
             "retry_backoff_trading_days": [1, 3],
+            "minimum_history_periods": 2,
         },
     })
     assert spec.persona_refresh.max_age_days == 30
+    assert spec.persona_refresh.minimum_history_periods == 2
     with pytest.raises(ValidationError, match="positive"):
         FundSpec(**{
             **MINIMAL,
             "persona_refresh": {"retry_backoff_trading_days": [0]},
         })
+
+
+def test_persona_minimum_history_periods_must_be_usable():
+    assert FundSpec(**MINIMAL).persona_refresh.minimum_history_periods == 4
+    for value in (0, 21):
+        with pytest.raises(ValidationError):
+            FundSpec(**{
+                **MINIMAL,
+                "persona_refresh": {"minimum_history_periods": value},
+            })
 
 
 def test_universe_is_an_optional_compatibility_default():

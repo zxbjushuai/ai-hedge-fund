@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from hedge_fund.brokers import SimBroker
 from hedge_fund.data.mock_client import MockDataClient
 from hedge_fund.failures import classify_cycle_failure
+from hedge_fund.features.snapshot import MIN_PERIODS
 from hedge_fund.fund import Fund, PersonaRefreshPolicy, load_spec, normalize_universe
 from hedge_fund.llm import LLMClient
 from hedge_fund.persistence.database import get_session, init_db
@@ -34,6 +35,15 @@ logger = logging.getLogger(__name__)
 _RUNNERS: dict[int, "SimRunner"] = {}
 _LOCK = threading.Lock()
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _persona_policy_payload(raw: str | None) -> dict | None:
+    """Decode a persisted policy, backfilling fields added after the run."""
+    if not raw:
+        return None
+    payload = json.loads(raw)
+    payload.setdefault("minimum_history_periods", MIN_PERIODS)
+    return payload
 
 
 def _benchmark_closes(
@@ -150,7 +160,7 @@ def estimate_persona_event_schedule(
                     if cutoff.isoformat() <= row_date <= signal_day and close > 0
                 ]
                 visible_metrics = [row for row in metric_rows if row.filing_date <= signal_day]
-                if not prices or len(visible_metrics) < 4:
+                if not prices or len(visible_metrics) < policy.minimum_history_periods:
                     continue
                 current_close = prices[-1][1]
                 current_filing = tuple(row.id for row in visible_metrics[-20:])
@@ -203,8 +213,11 @@ def validate_cached_data(
     start: str,
     end: str,
     require_earnings: bool = True,
+    minimum_history_periods: int = MIN_PERIODS,
 ) -> tuple[list[str], list[str]]:
     """Fail-fast point-in-time coverage validation shared by API and runner."""
+    if not 1 <= minimum_history_periods <= 20:
+        raise ValueError("minimum history periods must be between 1 and 20")
     days = _trading_days(db_path, benchmark, start, end)
     errors: list[str] = []
     warnings: list[str] = []
@@ -247,10 +260,11 @@ def validate_cached_data(
             visible_metrics = session.query(MetricsCache).filter(
                 MetricsCache.ticker == ticker, MetricsCache.filing_date <= start
             ).count()
-            if visible_metrics < 4:
+            if visible_metrics < minimum_history_periods:
                 warnings.append(
-                    f"{ticker}: fewer than four visible quarterly metrics at start "
-                    f"(found {visible_metrics}); persona models will abstain until eligible"
+                    f"{ticker}: only {visible_metrics} visible quarterly metrics at start; "
+                    f"configured minimum history requires {minimum_history_periods} "
+                    "(LLM models will abstain until eligible)"
                 )
             earnings = session.query(EarningsCache).filter(
                 EarningsCache.ticker == ticker,
@@ -594,6 +608,7 @@ class SimRunner:
             errors, warnings = validate_cached_data(
                 self._db_path, self._tickers, self._benchmark,
                 self._start, self._end, require_earnings,
+                minimum_history_periods=spec.persona_refresh.minimum_history_periods,
             )
             if errors:
                 raise ValueError("; ".join(errors))
@@ -886,9 +901,8 @@ def get_sim_status(sim_id: int, db_path: str) -> dict | None:
             "completed_at": run.completed_at,
             "warnings": json.loads(run.warnings or "[]"),
             "models": json.loads(run.models or "[]"),
-            "persona_refresh_policy": (
-                json.loads(run.persona_refresh_policy)
-                if run.persona_refresh_policy else None
+            "persona_refresh_policy": _persona_policy_payload(
+                run.persona_refresh_policy,
             ),
         }
     finally:
@@ -1036,9 +1050,8 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
             "warnings": json.loads(run.warnings or "[]"),
             "models": json.loads(run.models or "[]"),
             "audit_available": audit_available,
-            "persona_refresh_policy": (
-                json.loads(run.persona_refresh_policy)
-                if run.persona_refresh_policy else None
+            "persona_refresh_policy": _persona_policy_payload(
+                run.persona_refresh_policy,
             ),
         }
     finally:
@@ -1077,9 +1090,8 @@ def list_sim_runs(db_path: str) -> list[dict]:
                 "error_message": r.error_message,
                 "warnings": json.loads(r.warnings or "[]"),
                 "models": json.loads(r.models or "[]"),
-                "persona_refresh_policy": (
-                    json.loads(r.persona_refresh_policy)
-                    if r.persona_refresh_policy else None
+                "persona_refresh_policy": _persona_policy_payload(
+                    r.persona_refresh_policy,
                 ),
             }
             for r in rows
