@@ -25,6 +25,10 @@ and verified in one run. Update status with the date and commit hash.
   uses dated Yahoo earnings announcements and abstains when none are available.
 - Failed persona bootstrap attempts keep their original event identity, so
   retry backoff and non-retryable suppression apply until a genuinely new event.
+- LLM persona eligibility requires `persona_refresh.minimum_history_periods`
+  filed TTM periods (default 4, configurable per mandate from 1-20). Preflight,
+  runtime abstention messages, and the Web policy display use the configured
+  threshold; older persisted runs are backfilled with the default on read.
 - Retention reads active simulation state read-only, protects
   `pending`/`running`/`cancelling` run logs, and rechecks state at apply time.
 
@@ -150,7 +154,7 @@ Goal: fix cycle-2 relabeling that bypasses retry backoff; add regression test.
 Files: `hedge_fund/simulation/persona_state.py`.
 
 ### AIHF-013 — Newly listed / partial-history eligibility
-Status: open
+Status: done (2026-11-21, `620a139`; backend 440 tests, frontend 35 tests + lint/build). Adds a per-mandate `persona_refresh.minimum_history_periods` threshold (default 4, range 1-20), applies it consistently to snapshot construction, persona abstention, event estimation, and cached-data preflight, and exposes it in the Web policy display. Older persisted policies are backfilled with the default on read. The threshold is per mandate, not per ticker; lowering it is an explicit research decision and does not bypass point-in-time filing filtering.
 Goal: define and implement eligibility when fewer than four quarters exist;
 avoid silent abstention surprises.
 Acceptance: docs + tests.
