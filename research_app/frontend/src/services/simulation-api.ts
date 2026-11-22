@@ -230,12 +230,22 @@ export interface SimPreflight {
   persona_count: number;
   event_reason_counts: Record<string, number>;
   persona_refresh_policy: PersonaRefreshPolicy;
+  initial_capital: number;
+  carried_book: CarriedBookSummary | null;
   provider: string;
   model: string;
   benchmark: string;
   trading_days: number;
   enabled_models: string[];
   warnings: string[];
+}
+
+export interface CarriedBookSummary {
+  run_id: number;
+  valuation_date: string;
+  nav: number;
+  cash: number;
+  positions: Record<string, number>;
 }
 
 export interface PersonaRefreshPolicy {
@@ -253,6 +263,7 @@ export interface SimStatus {
   current_day: number;
   total_days: number;
   final_nav: number | null;
+  carried_from_run_id?: number | null;
   error_message?: string | null;
   completed_at?: string | null;
   warnings?: string[];
@@ -447,6 +458,8 @@ export interface SimRunSummary {
   tickers: string[];
   start_date: string;
   end_date: string;
+  valuation_date?: string | null;
+  carryable?: boolean;
   initial_capital: number;
   carried_from_run_id?: number | null;
   benchmark: string | null;

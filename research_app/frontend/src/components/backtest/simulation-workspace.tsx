@@ -16,6 +16,9 @@ function message(error: unknown) {
   const detail = (error as { detail?: { errors?: string[] } })?.detail;
   return detail?.errors?.join('\n') || (error instanceof Error ? error.message : String(error));
 }
+function continuationEligible(run: SimRunSummary) {
+  return run.status === 'completed' && run.final_nav != null && run.carryable !== false;
+}
 
 export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, active }: {
   revision: number; onRefresh: () => void; onData: (intent: DataIntent) => void; onProviders: () => void; active: boolean;
@@ -26,6 +29,7 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [capital, setCapital] = useState('100000');
+  const [carriedFrom, setCarriedFrom] = useState<SimRunSummary | null>(null);
   const [concurrency, setConcurrency] = useState(4);
   const reviewHeading = useRef<HTMLHeadingElement>(null);
   const runningHeading = useRef<HTMLHeadingElement>(null);
@@ -60,11 +64,15 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   const resultSequence = useRef(0);
   const dateTouched = useRef(false);
   const initializedDates = useRef(false);
+  const continuationEndInitialized = useRef(false);
   const requestLock = useRef(false);
   const selection = JSON.stringify([...new Set([...tickers, benchmark].filter(Boolean))]);
   const detailKey = `${revision}:${selection}`;
   const detailsReady = loaded.key === detailKey && loaded.count === JSON.parse(selection).length && !detailErrors.length;
-  const request = useMemo<SimRunRequest>(() => ({ tickers, benchmark, start_date: start, end_date: end, initial_capital: Number(capital), llm_connection_id: Number(connection), model }), [tickers, benchmark, start, end, capital, connection, model]);
+  const request = useMemo<SimRunRequest>(() => ({
+    tickers, benchmark, start_date: start, end_date: end, initial_capital: Number(capital),
+    carried_from_run_id: carriedFrom?.id ?? null, llm_connection_id: Number(connection), model,
+  }), [tickers, benchmark, start, end, capital, carriedFrom, connection, model]);
   const configKey = JSON.stringify([request, revision, providers]);
   const latestKey = useRef(configKey);
   latestKey.current = configKey;
@@ -98,10 +106,21 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
     return () => { current = false; };
   }, [selection, detailKey]);
   useEffect(() => {
-    if (!detailsReady || initializedDates.current || dateTouched.current) return;
+    if (!detailsReady || initializedDates.current || dateTouched.current || carriedFrom) return;
     const common = commonCoverage(tickers, benchmark, details);
     if (common) { setStart(common.start); setEnd(common.end); initializedDates.current = true; }
-  }, [detailsReady, tickers, benchmark, details]);
+  }, [detailsReady, tickers, benchmark, details, carriedFrom]);
+  useEffect(() => {
+    if (!carriedFrom || !detailsReady) return;
+    const common = commonCoverage(tickers, benchmark, details);
+    const fallbackEnd = common?.end || benchmarkDates(details[benchmark]).at(-1) || '';
+    if (!fallbackEnd) return;
+    setStart(carriedFrom.valuation_date || carriedFrom.end_date);
+    if (!continuationEndInitialized.current) {
+      setEnd(previous => previous || fallbackEnd);
+      continuationEndInitialized.current = true;
+    }
+  }, [carriedFrom, detailsReady, tickers, benchmark, details]);
   useEffect(() => {
     let current = true;
     simulationApi.listSimRuns().then(data => { if (current) { setRuns(data.runs); setHistoryError(''); } }).catch(err => { if (current) setHistoryError(message(err)); });
@@ -139,11 +158,16 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   const selectedProvider = providers.find(item => String(item.id) === connection);
   const availableModel = selectedProvider?.models.some(item => item.model_id === model);
   const missing = tickers.filter(ticker => !inventory[ticker]?.prices?.count);
+  const carriedUniverseMismatch = !!carriedFrom && (
+    tickers.length !== carriedFrom.tickers.length || tickers.some(ticker => !carriedFrom.tickers.includes(ticker))
+  );
+  const carriedBenchmarkMismatch = !!carriedFrom && benchmark.trim().toUpperCase() !== (carriedFrom.benchmark || '').trim().toUpperCase();
   const formErrors = [
     ...analysis.errors,
     ...(!Number.isFinite(Number(capital)) || Number(capital) <= 0 ? ['Initial capital must be a positive number.'] : []),
     ...(!availableModel ? ['Select an available connection and model.'] : []),
     ...(missing.length ? [`Missing price cache: ${missing.join(', ')}.`] : []),
+    ...(carriedUniverseMismatch || carriedBenchmarkMismatch ? ['A continued run must keep its parent universe and benchmark.'] : []),
   ];
   const canReview = detailsReady && !inventoryLoading && !inventoryError && !formErrors.length && !locked;
   const openData = () => onData({ tickers, benchmark, start, end, id: Date.now() });
@@ -175,6 +199,26 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
       setPollError(text); setHistoryError(text); setHistoryRevision(value => value + 1);
     } finally { setCancelBusy(false); }
   }
+  function continueRun(source: SimRunSummary) {
+    if (!continuationEligible(source)) return;
+    setCarriedFrom(source);
+    setTickers(source.tickers);
+    setBenchmark(source.benchmark || 'SPY');
+    setStart(source.valuation_date || source.end_date);
+    setEnd('');
+    continuationEndInitialized.current = false;
+    setCapital(String(source.final_nav));
+    setConnection(source.llm_connection_id == null ? '' : String(source.llm_connection_id));
+    setModel(source.model || '');
+    dateTouched.current = true;
+    setReview(null);
+    setAcknowledged(false);
+    setError('');
+    setTab('new');
+  }
+  function cancelContinuation() {
+    setCarriedFrom(null);
+  }
   useEffect(() => {
     const heading = tab === 'running' ? runningHeading.current : review ? reviewHeading.current : null;
     if (heading) {
@@ -187,22 +231,38 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   }, [runId]);
   const validConcurrency = Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 8;
   const benchmarkDays = benchmarkDates(details[benchmark]);
+  const childrenByParent = useMemo(() => {
+    const children = new Map<number, SimRunSummary[]>();
+    runs.forEach(item => {
+      if (item.carried_from_run_id == null) return;
+      const siblings = children.get(item.carried_from_run_id) || [];
+      children.set(item.carried_from_run_id, [...siblings, item]);
+    });
+    return children;
+  }, [runs]);
+  const lineageControls = (parentId: number | null | undefined, children: SimRunSummary[] = []) => (
+    <span className="run-lineage">
+      {parentId != null && <button className="text-link" onClick={() => void viewResult(parentId)}>From Sim #{parentId}</button>}
+      {children.length > 0 && <>{parentId != null ? ' · ' : ''}Children: {children.map(child => <button key={child.id} className="text-link" onClick={() => void viewResult(child.id)}>Child Sim #{child.id}</button>)}</>}
+    </span>
+  );
   return <div className="simulation-workspace">
     <div className="page-heading"><div><h1>Simulation</h1><p>Build an experiment from the data you have.</p></div><div className="segmented" aria-label="Simulation views"><button aria-pressed={tab === 'new'} onClick={() => setTab('new')}>New simulation</button><button aria-pressed={tab === 'running'} onClick={() => setTab('running')}>Running</button><button aria-pressed={tab === 'history'} onClick={() => { setTab('history'); setHistoryRevision(value => value + 1); }}>History</button></div></div>
     <RuntimeStatusPanel active={active} refreshKey={revision} />
     <section hidden={tab !== 'running'}><h2 ref={runningHeading} tabIndex={-1}>Running simulation</h2>{!run && <p>No simulation selected. Start a simulation or track one from History.</p>}{run && <section className="run-banner" aria-live="polite"><div><strong>Simulation #{run.id}: {run.status?.status ?? 'starting'}</strong><p>{run.status ? `${run.status.current_day} / ${run.status.total_days} days` : 'Waiting for status…'}</p>{run.status?.status === 'cancelled' ? <p>Run cancelled. Completed cycles remain available.</p> : run.status?.error_message && <p role="alert">{run.status.error_message}</p>}</div>{running && <progress aria-label="Simulation progress" value={run.status?.current_day ?? 0} max={run.status?.total_days || 1} />}{running && <Button variant="outline" disabled={cancelBusy || run.status?.status === 'cancelling'} onClick={() => void cancelRun(run.id)}>{cancelBusy || run.status?.status === 'cancelling' ? 'Cancelling…' : 'Cancel run'}</Button>}{run.status && <Button onClick={() => { setTab('history'); void viewResult(run.id); }}>View result</Button>}{pollError && <div role="alert">Status unavailable: {pollError}<Button variant="outline" onClick={() => setPollRevision(value => value + 1)}>Retry status</Button></div>}</section>}{run && <><p>Estimated model calls: {run.status?.execution_config?.preflight?.estimated_llm_calls ?? 'Not recorded'}. Retries can exceed this estimate.</p><SimActivityView status={run.status} /></>}</section>
     <div hidden={tab !== 'new'}>
+      {carriedFrom && <div className="notice continuation-banner" role="status"><strong>Continuing from Sim #{carriedFrom.id}</strong><p>The child starts on the parent valuation date and inherits its closing cash and positions. Universe and benchmark must match the parent. <Button variant="outline" onClick={cancelContinuation}>Cancel continuation</Button></p></div>}
       <div className="simulation-grid"><div className="simulation-main">
         {inventoryError && <p role="alert" className="notice error">{inventoryError}</p>}
-        <CachedUniverseSelector selected={tickers} onChange={setTickers} inventory={inventory} revision={revision} disabled={locked} onData={openData} />
+        <CachedUniverseSelector selected={tickers} onChange={setTickers} inventory={inventory} revision={revision} disabled={locked || !!carriedFrom} onData={openData} />
         <div className="coverage-status"><span>{detailsReady ? 'Coverage loaded' : `Checking coverage: ${loaded.key === detailKey ? loaded.count : 0} / ${JSON.parse(selection).length}`}</span><Button variant="ghost" disabled={locked} onClick={onRefresh}>Refresh cached data</Button></div>
         {detailErrors.length > 0 && <div role="alert" className="notice error">{detailErrors.map(item => <p key={item}>{item}</p>)}<Button variant="outline" disabled={locked} onClick={onRefresh}>Retry coverage</Button><Button variant="ghost" onClick={openData}>Prepare data</Button></div>}
-        {detailsReady && <CoverageTimeline tickers={tickers} benchmark={benchmark} details={details} range={{ start, end }} disabled={locked} onCommon={() => { if (analysis.common) { dateTouched.current = true; setStart(analysis.common.start); setEnd(analysis.common.end); } }} />}
+        {detailsReady && <CoverageTimeline tickers={tickers} benchmark={benchmark} details={details} range={{ start, end }} disabled={locked || !!carriedFrom} onCommon={() => { if (analysis.common) { dateTouched.current = true; setStart(analysis.common.start); setEnd(analysis.common.end); } }} />}
       </div><aside className="configuration-panel"><h2>Run configuration</h2><p className="quiet">{tickers.length} securities selected</p>
-        <fieldset disabled={locked} className="config-fields"><label>Benchmark<input list="cached-benchmarks" value={benchmark} onChange={e => setBenchmark(e.target.value.trim().toUpperCase())} /></label><datalist id="cached-benchmarks">{Object.entries(inventory).filter(([, item]) => item.prices?.count).map(([ticker]) => <option key={ticker} value={ticker} />)}</datalist><p className="quiet">Trading calendar and total-return comparison. Not traded unless selected.</p>
-          <label>Start date<Input type="date" min={benchmarkDays[0]} max={benchmarkDays.at(-1)} value={start} onChange={e => { dateTouched.current = true; setStart(e.target.value); }} /></label>
+        <fieldset disabled={locked} className="config-fields"><label>Benchmark<input list="cached-benchmarks" disabled={!!carriedFrom} value={benchmark} onChange={e => setBenchmark(e.target.value.trim().toUpperCase())} /></label><datalist id="cached-benchmarks">{Object.entries(inventory).filter(([, item]) => item.prices?.count).map(([ticker]) => <option key={ticker} value={ticker} />)}</datalist><p className="quiet">Trading calendar and total-return comparison. Not traded unless selected.</p>
+          <label>Start date<Input type="date" disabled={!!carriedFrom} min={benchmarkDays[0]} max={benchmarkDays.at(-1)} value={start} onChange={e => { dateTouched.current = true; setStart(e.target.value); }} /></label>
           <label>End date<Input type="date" min={benchmarkDays[0]} max={benchmarkDays.at(-1)} value={end} onChange={e => { dateTouched.current = true; setEnd(e.target.value); }} /></label>
-          <label>Initial capital (USD)<Input type="number" min="0.01" step="any" value={capital} onChange={e => setCapital(e.target.value)} /></label>
+          <label>Initial capital (USD)<Input type="number" disabled={!!carriedFrom} min="0.01" step="any" value={capital} onChange={e => setCapital(e.target.value)} /></label>
           <label>Connection<select value={connection} onChange={e => { setConnection(e.target.value); setModel(''); }}><option value="">Choose a connection</option>{providers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           <label>Model<select value={model} disabled={!selectedProvider || locked} onChange={e => setModel(e.target.value)}><option value="">Choose a model</option>{selectedProvider?.models.map(item => <option key={item.model_id} value={item.model_id}>{item.display_name} ({item.model_id})</option>)}</select></label>
         </fieldset>
@@ -212,7 +272,7 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
         <Button className="w-full" disabled={!canReview} onClick={() => void prepare()}>{busy ? 'Checking…' : 'Review simulation'}</Button><p className="quiet">Review does not start model inference. Confirm on the next panel to run.</p>
       </aside></div>
       {error && <p className="notice error whitespace-pre-wrap" role="alert">{error}</p>}
-      {review && review.key === configKey && <section className="review-panel" aria-labelledby="review-heading"><h2 id="review-heading" ref={reviewHeading} tabIndex={-1}>Review simulation</h2><p>{review.request.tickers.join(', ')} · {start} – {end} · ${Number(capital).toLocaleString()}</p><dl className="review-metrics"><div><dt>Estimated model calls</dt><dd>{review.result.estimated_llm_calls}</dd></div><div><dt>Refresh events</dt><dd>{review.result.estimated_refresh_events}</dd></div><div><dt>Trading days</dt><dd>{review.result.trading_days}</dd></div></dl><p>{selectedProvider?.name} / {review.result.model} · Benchmark {review.result.benchmark}</p><p>Strategies: {review.result.enabled_models.join(', ') || 'None'}</p><p>Refresh policy: {review.result.persona_refresh_policy.valuation_change_pct}% price change / {review.result.persona_refresh_policy.max_age_days} days.</p><p>Events: {Object.entries(review.result.event_reason_counts).map(([name, count]) => `${name}: ${count}`).join(', ')}</p><p className="quiet">Event-schedule upper bound; prompt cache may reduce actual calls. Preflight is not a guarantee of completion.</p>
+      {review && review.key === configKey && <section className="review-panel" aria-labelledby="review-heading"><h2 id="review-heading" ref={reviewHeading} tabIndex={-1}>Review simulation</h2><p>{review.request.tickers.join(', ')} · {start} – {end} · ${Number(capital).toLocaleString()}</p>{review.result.carried_book && <div className="notice"><strong>Carried book: Sim #{review.result.carried_book.run_id}</strong><p>Valuation {review.result.carried_book.valuation_date} · Inherited NAV ${review.result.carried_book.nav.toLocaleString()} · Cash ${review.result.carried_book.cash.toLocaleString()}</p><p>Positions: {Object.entries(review.result.carried_book.positions).map(([ticker, quantity]) => `${ticker} ${quantity}`).join(', ') || 'None'}</p></div>}<dl className="review-metrics"><div><dt>Estimated model calls</dt><dd>{review.result.estimated_llm_calls}</dd></div><div><dt>Refresh events</dt><dd>{review.result.estimated_refresh_events}</dd></div><div><dt>Trading days</dt><dd>{review.result.trading_days}</dd></div></dl><p>{selectedProvider?.name} / {review.result.model} · Benchmark {review.result.benchmark}</p><p>Strategies: {review.result.enabled_models.join(', ') || 'None'}</p><p>Refresh policy: {review.result.persona_refresh_policy.valuation_change_pct}% price change / {review.result.persona_refresh_policy.max_age_days} days.</p><p>Events: {Object.entries(review.result.event_reason_counts).map(([name, count]) => `${name}: ${count}`).join(', ')}</p><p className="quiet">Event-schedule upper bound; prompt cache may reduce actual calls. Preflight is not a guarantee of completion.</p>
         <p>History &gt;= {review.result.persona_refresh_policy.minimum_history_periods} filed periods.</p>
         {warnings.length > 0 && <><ul className="notice warning">{warnings.map(item => <li key={item}>{item}</li>)}</ul><label className="check-label"><input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} /> I understand the data and strategy warnings, including possible valuation failure.</label></>}
         <label>Model concurrency<Input type="number" min={1} max={8} step={1} value={concurrency} disabled={busy} onChange={event => setConcurrency(Number(event.target.value))} /></label><p className="quiet">1–8 simultaneous requests. Higher concurrency may trigger provider rate limits. Pending submission is bounded to twice this setting; the server also limits total in-flight requests to 8.</p>{!validConcurrency && <p role="alert">Enter an integer from 1 to 8.</p>}
@@ -220,8 +280,8 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
       </section>}
     </div>
     <section hidden={tab !== 'history'} className="history-section"><div className="section-heading"><h2>Simulation history</h2><Button variant="outline" onClick={() => setHistoryRevision(value => value + 1)}>Refresh history</Button></div>{historyError && <p role="alert" className="notice error">{historyError}</p>}
-      <div className="table-scroll"><table className="research-table"><thead><tr><th>Run</th><th>Status</th><th>Period / securities</th><th>Connection / model</th><th>Benchmark</th><th>Final NAV</th></tr></thead><tbody>{!runs.length && <tr><td colSpan={6}>No saved simulations yet.</td></tr>}{runs.map(item => <tr key={item.id} data-selected={viewing === item.id}><td><button className="text-link" onClick={() => void viewResult(item.id)}>{item.name || `Sim #${item.id}`}</button></td><td>{item.status}{['running', 'pending', 'cancelling'].includes(item.status) && !running && <Button variant="ghost" onClick={() => { setRun({ id: item.id }); setTab('running'); setPollRevision(value => value + 1); }}>Track</Button>}{['running', 'pending'].includes(item.status) && <Button variant="ghost" disabled={cancelBusy} onClick={() => void cancelRun(item.id)}>Cancel</Button>}{item.error_message && item.status !== 'cancelled' && <p className="notice error">{item.error_message}</p>}</td><td>{item.start_date} – {item.end_date}<span className="cell-secondary">{item.tickers.join(', ')}</span></td><td>{item.llm_connection_name || item.provider || 'N/A'}<span className="cell-secondary">{item.model || 'N/A'}</span></td><td>{item.benchmark || 'N/A'}</td><td>{item.final_nav == null ? '—' : item.final_nav.toLocaleString(undefined, { style: 'currency', currency: 'USD' })}</td></tr>)}</tbody></table></div>
-      {resultLoading && <p role="status">Loading result #{viewing}…</p>}{resultError && <p role="alert" className="notice error">{resultError}<Button variant="outline" onClick={() => viewing && void viewResult(viewing)}>Retry result</Button></p>}{result && <div className="result-panel"><h2>Simulation #{viewing}</h2><SimResults result={result} /></div>}
+      <div className="table-scroll"><table className="research-table"><thead><tr><th>Run</th><th>Status</th><th>Period / securities</th><th>Connection / model</th><th>Benchmark</th><th>Final NAV</th></tr></thead><tbody>{!runs.length && <tr><td colSpan={6}>No saved simulations yet.</td></tr>}{runs.map(item => <tr key={item.id} data-selected={viewing === item.id}><td><button className="text-link" onClick={() => void viewResult(item.id)}>{item.name || `Sim #${item.id}`}</button><span className="cell-secondary">{lineageControls(item.carried_from_run_id, childrenByParent.get(item.id))}</span></td><td>{item.status}{['running', 'pending', 'cancelling'].includes(item.status) && !running && <Button variant="ghost" onClick={() => { setRun({ id: item.id }); setTab('running'); setPollRevision(value => value + 1); }}>Track</Button>}{['running', 'pending'].includes(item.status) && <Button variant="ghost" disabled={cancelBusy} onClick={() => void cancelRun(item.id)}>Cancel</Button>}{continuationEligible(item) && <Button variant="ghost" onClick={() => continueRun(item)}>Continue Sim #{item.id}</Button>}{item.error_message && item.status !== 'cancelled' && <p className="notice error">{item.error_message}</p>}</td><td>{item.start_date} – {item.end_date}<span className="cell-secondary">{item.tickers.join(', ')}</span></td><td>{item.llm_connection_name || item.provider || 'N/A'}<span className="cell-secondary">{item.model || 'N/A'}</span></td><td>{item.benchmark || 'N/A'}</td><td>{item.final_nav == null ? '—' : item.final_nav.toLocaleString(undefined, { style: 'currency', currency: 'USD' })}</td></tr>)}</tbody></table></div>
+      {resultLoading && <p role="status">Loading result #{viewing}…</p>}{resultError && <p role="alert" className="notice error">{resultError}<Button variant="outline" onClick={() => viewing && void viewResult(viewing)}>Retry result</Button></p>}{result && <div className="result-panel"><h2>Simulation #{viewing}</h2><p className="quiet">{lineageControls(result.carried_from_run_id, childrenByParent.get(result.id))}</p><SimResults result={result} /></div>}
     </section>
   </div>;
 }

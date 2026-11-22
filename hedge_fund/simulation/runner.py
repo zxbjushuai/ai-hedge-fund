@@ -8,7 +8,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from hedge_fund.brokers import SimBroker
@@ -1065,6 +1065,29 @@ def list_sim_runs(db_path: str) -> list[dict]:
         rows = session.execute(
             select(SimRun).order_by(SimRun.created_at.desc()).limit(50)
         ).scalars().all()
+        run_ids = [r.id for r in rows]
+        valuation_dates = {
+            sim_run_id: cycle_date
+            for sim_run_id, cycle_date in session.execute(
+                select(
+                    SimNavSnapshot.sim_run_id,
+                    func.max(SimNavSnapshot.cycle_date),
+                )
+                .where(SimNavSnapshot.sim_run_id.in_(run_ids))
+                .group_by(SimNavSnapshot.sim_run_id)
+            ).all()
+        } if run_ids else {}
+        latest_cycle_payload = {
+            sim_run_id: payload
+            for sim_run_id, payload in session.execute(
+                select(SimCycleRecord.sim_run_id, SimCycleRecord.payload)
+                .where(
+                    SimCycleRecord.sim_run_id.in_(run_ids),
+                    SimCycleRecord.status == "completed",
+                )
+                .order_by(SimCycleRecord.sim_run_id, SimCycleRecord.cycle_number)
+            ).all()
+        } if run_ids else {}
         return [
             {
                 "id": r.id,
@@ -1072,6 +1095,13 @@ def list_sim_runs(db_path: str) -> list[dict]:
                 "tickers": json.loads(r.tickers),
                 "start_date": r.start_date,
                 "end_date": r.end_date,
+                "valuation_date": valuation_dates.get(r.id),
+                "carryable": (
+                    r.status == "completed"
+                    and r.final_nav is not None
+                    and valuation_dates.get(r.id) is not None
+                    and latest_cycle_payload.get(r.id) is not None
+                ),
                 "initial_capital": r.initial_capital,
                 "carried_from_run_id": r.carried_from_run_id,
                 "benchmark": r.benchmark,

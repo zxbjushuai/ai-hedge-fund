@@ -607,6 +607,87 @@ def test_legacy_persona_policy_receives_default_history_threshold(tmp_path: Path
     assert listed[0]["persona_refresh_policy"]["minimum_history_periods"] == 4
 
 
+def test_list_sim_runs_exposes_final_valuation_date(tmp_path: Path):
+    db = tmp_path / "valuation-date.db"
+    with get_session(str(db)) as session:
+        run = SimRun(
+            name="partial-coverage", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-31",
+            initial_capital=1000, status="completed", total_days=3, final_nav=1010,
+        )
+        session.add(run)
+        session.commit()
+        sim_id = run.id
+        session.add_all([
+            SimNavSnapshot(
+                sim_run_id=sim_id, cycle_date="2024-01-02", nav=1000,
+                cash=1000, equity=0, benchmark_nav=None,
+            ),
+            SimNavSnapshot(
+                sim_run_id=sim_id, cycle_date="2024-01-04", nav=1010,
+                cash=1010, equity=0, benchmark_nav=None,
+            ),
+        ])
+        session.commit()
+
+    listed = list_sim_runs(str(db))
+    assert listed[0]["end_date"] == "2024-01-31"
+    assert listed[0]["valuation_date"] == "2024-01-04"
+
+
+def test_list_sim_runs_reports_null_valuation_date_without_nav(tmp_path: Path):
+    db = tmp_path / "no-valuation.db"
+    with get_session(str(db)) as session:
+        session.add(SimRun(
+            name="empty", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-31",
+            initial_capital=1000, status="failed", total_days=3,
+        ))
+        session.commit()
+
+    listed = list_sim_runs(str(db))
+    assert listed[0]["valuation_date"] is None
+
+
+def test_list_sim_runs_marks_only_usable_closing_books_carryable(tmp_path: Path):
+    db = tmp_path / "carryable.db"
+    with get_session(str(db)) as session:
+        adjustable = SimRun(
+            name="adjustable", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-31",
+            initial_capital=1000, status="completed", total_days=1, final_nav=1010,
+        )
+        missing_book = SimRun(
+            name="missing-book", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-31",
+            initial_capital=1000, status="completed", total_days=1, final_nav=1010,
+        )
+        failed = SimRun(
+            name="failed", tickers=json.dumps(["AAA"]), benchmark="SPY",
+            start_date="2024-01-01", end_date="2024-01-31",
+            initial_capital=1000, status="failed", total_days=1,
+        )
+        session.add_all([adjustable, missing_book, failed])
+        session.commit()
+        for run in (adjustable, missing_book):
+            session.add(SimNavSnapshot(
+                sim_run_id=run.id, cycle_date="2024-01-04", nav=1010,
+                cash=1010, equity=0, benchmark_nav=None,
+            ))
+        session.add(SimCycleRecord(
+            sim_run_id=adjustable.id, cycle_number=1, signal_date="2024-01-03",
+            execution_date="2024-01-04", status="completed", universe=json.dumps(["AAA"]),
+            payload=json.dumps({"positions": {}, "cash": 1010, "nav": 1010}),
+            cash=1010, nav=1010,
+        ))
+        session.commit()
+
+    listed = {run["name"]: run for run in list_sim_runs(str(db))}
+    assert listed["adjustable"]["carryable"] is True
+    assert listed["missing-book"]["carryable"] is False
+    assert listed["failed"]["carryable"] is False
+
+
 def test_failed_cycle_audit_categorizes_data_failure_without_secret(tmp_path: Path):
     db = tmp_path / "failed-audit.db"
     with get_session(str(db)) as session:

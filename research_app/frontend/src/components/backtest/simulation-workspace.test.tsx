@@ -11,7 +11,15 @@ const details = (ticker: string, dates = days): CachedSecurityDetail => ({ ticke
   earnings: [{ report_period: '2023-09-30', announcement_date: '2023-11-01', actual_eps: 2, estimated_eps: 1, surprise_pct: 100, source: 'test' }], coverage_history: [] });
 const item = (ticker: string): CachedSecurityItem => ({ ticker, name: `${ticker} company`, exchange: 'NYSE', asset_type: 'equity', latest_close: 10, latest_adjusted_close: 10, latest_volume: 1, latest_date: days[3], prices: { min: days[0], max: days[3], count: 4, price_modes: ['raw'] }, metrics: { min: '2023-01-01', max: '2023-04-01', count: 4 }, earnings: { min: '2023-11-01', max: '2023-11-01', count: 1 } });
 const props = () => ({ active: true, revision: 0, onRefresh: vi.fn(), onData: vi.fn(), onProviders: vi.fn() });
-const preflight = { estimated_llm_calls: 3, estimate_kind: 'event_schedule_upper_bound' as const, estimated_refresh_events: 1, persona_count: 3, event_reason_counts: { bootstrap: 1 }, persona_refresh_policy: { valuation_change_pct: 20, max_age_days: 90, retry_backoff_trading_days: [1, 2, 4, 5], minimum_history_periods: 4 }, provider: 'test', model: 'small', benchmark: 'SPY', trading_days: 4, enabled_models: ['buffett'], warnings: [] };
+const preflight = { estimated_llm_calls: 3, estimate_kind: 'event_schedule_upper_bound' as const, estimated_refresh_events: 1, persona_count: 3, event_reason_counts: { bootstrap: 1 }, persona_refresh_policy: { valuation_change_pct: 20, max_age_days: 90, retry_backoff_trading_days: [1, 2, 4, 5], minimum_history_periods: 4 }, initial_capital: 100000, carried_book: null, provider: 'test', model: 'small', benchmark: 'SPY', trading_days: 4, enabled_models: ['buffett'], warnings: [] };
+const completedRun = (id: number, overrides: Record<string, unknown> = {}) => ({
+  id, name: `Run ${id}`, tickers: ['AAPL'], start_date: days[0], end_date: days[1], valuation_date: days[1], carryable: true, initial_capital: 100000,
+  carried_from_run_id: null, benchmark: 'SPY', provider: 'test', protocol: 'openai_chat_completions',
+  model: 'small', llm_connection_id: 12, llm_connection_name: 'Test connection',
+  llm_base_url: 'http://test', status: 'completed', current_day: 3, total_days: 3, final_nav: 105000,
+  created_at: '2026-11-22T00:00:00+00:00', completed_at: '2026-11-22T00:01:00+00:00',
+  error_message: null, warnings: [], models: ['buffett'], persona_refresh_policy: null, ...overrides,
+});
 
 beforeEach(() => {
   localStorage.clear();
@@ -208,6 +216,116 @@ it('renders old history/results with null benchmark, provider and audit data', a
   fireEvent.click(await screen.findByRole('button', { name: 'Sim #1' }));
   await screen.findByRole('heading', { name: 'Simulation #1' });
   expect(screen.queryByText(/Failed to load result/)).toBeNull();
+});
+
+it('continues a completed run with inherited settings and submits the parent id', async () => {
+  const parent = completedRun(15, { end_date: days[3], valuation_date: days[1] });
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [parent] });
+  vi.mocked(simulationApi.preflightSim).mockResolvedValue({
+    ...preflight,
+    initial_capital: 105000,
+    carried_book: { run_id: 15, valuation_date: days[1], nav: 105000, cash: 25000, positions: { AAPL: 80 } },
+  });
+  render(<SimulationWorkspace {...props()} />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Continue Sim #15' }));
+
+  expect(screen.getByText(/Continuing from Sim #15/)).toBeTruthy();
+  await waitFor(() => expect((screen.getByLabelText('Start date') as HTMLInputElement).value).toBe(days[1]));
+  await waitFor(() => expect((screen.getByLabelText('End date') as HTMLInputElement).value).toBe(days[3]));
+  expect((screen.getByLabelText('Initial capital (USD)') as HTMLInputElement).value).toBe('105000');
+  expect((screen.getByLabelText('Connection') as HTMLSelectElement).value).toBe('12');
+  expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('small');
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Review simulation' }) as HTMLButtonElement).disabled).toBe(false));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Review simulation' }));
+  await screen.findByRole('heading', { name: 'Review simulation' });
+  expect(screen.getByText(/Carried book: Sim #15/)).toBeTruthy();
+  expect(simulationApi.preflightSim).toHaveBeenCalledWith(expect.objectContaining({
+    tickers: ['AAPL'], benchmark: 'SPY', start_date: days[1], end_date: days[3],
+    initial_capital: 105000, carried_from_run_id: 15, llm_connection_id: 12, model: 'small',
+  }));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm and run' }));
+  await waitFor(() => expect(simulationApi.runSim).toHaveBeenCalledWith(expect.objectContaining({
+    carried_from_run_id: 15, start_date: days[1], end_date: days[3], initial_capital: 105000,
+  })));
+});
+
+it('cancels a continuation without clearing the inherited form values', async () => {
+  const parent = completedRun(15, { end_date: days[3], valuation_date: days[1] });
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [parent] });
+  render(<SimulationWorkspace {...props()} />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Continue Sim #15' }));
+  expect(screen.getByText(/Continuing from Sim #15/)).toBeTruthy();
+  await waitFor(() => expect((screen.getByLabelText('End date') as HTMLInputElement).value).toBe(days[3]));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel continuation' }));
+
+  await waitFor(() => expect(screen.queryByText(/Continuing from Sim #15/)).toBeNull());
+  expect((screen.getByLabelText('Initial capital (USD)') as HTMLInputElement).value).toBe('105000');
+  expect((screen.getByLabelText('Start date') as HTMLInputElement).value).toBe(days[1]);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Review simulation' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button', { name: 'Review simulation' }));
+  await screen.findByRole('heading', { name: 'Review simulation' });
+  expect(simulationApi.preflightSim).toHaveBeenCalledWith(expect.objectContaining({ carried_from_run_id: null }));
+});
+
+it('links parents and children in history and the selected result', async () => {
+  const parent = completedRun(15);
+  const child = completedRun(16, { name: 'Child run', carried_from_run_id: 15 });
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [child, parent] });
+  vi.spyOn(simulationApi, 'getSimResult').mockResolvedValue({
+    ...parent, total_return_pct: 5, benchmark_return_pct: 2, excess_return_pct: 3, max_drawdown_pct: 1,
+    sharpe_ratio: 1.2, nav_curve: [{ date: days[0], nav: 100000, cash: 100000, equity: 0, benchmark_nav: 100000 }],
+    trades: [], trade_count: 0, buy_count: 0, sell_count: 0, status: 'completed', audit_available: false,
+  } as SimResult);
+  render(<SimulationWorkspace {...props()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+
+  const parentLink = await screen.findByRole('button', { name: 'From Sim #15' });
+  expect(screen.getByRole('button', { name: 'Child Sim #16' })).toBeTruthy();
+  fireEvent.click(parentLink);
+  await screen.findByRole('heading', { name: 'Simulation #15' });
+  expect(screen.getAllByText(/Children:/).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole('button', { name: 'Child Sim #16' }).length).toBeGreaterThan(0);
+});
+
+it('falls back to the benchmark end when the inherited universe lacks common coverage', async () => {
+  const empty = { ...details('AAPL'), prices: [] };
+  vi.mocked(simulationApi.getCachedSecurity).mockImplementation(async ticker => (ticker === 'AAPL' ? empty : details(ticker)));
+  const parent = completedRun(15, { end_date: days[3], valuation_date: days[1] });
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [parent] });
+  render(<SimulationWorkspace {...props()} />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Continue Sim #15' }));
+
+  await waitFor(() => expect((screen.getByLabelText('Start date') as HTMLInputElement).value).toBe(days[1]));
+  await waitFor(() => expect((screen.getByLabelText('End date') as HTMLInputElement).value).toBe(days[3]));
+  expect((screen.getByLabelText('Initial capital (USD)') as HTMLInputElement).value).toBe('105000');
+});
+
+it('does not offer continuation for an incomplete completed run', async () => {
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({
+    runs: [completedRun(15, { final_nav: null, carryable: false })],
+  });
+  render(<SimulationWorkspace {...props()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+  await screen.findByRole('button', { name: 'Run 15' });
+  expect(screen.queryByRole('button', { name: 'Continue Sim #15' })).toBeNull();
+});
+
+it('does not offer continuation when the backend reports no closing book', async () => {
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({
+    runs: [completedRun(15, { carryable: false })],
+  });
+  render(<SimulationWorkspace {...props()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+  await screen.findByRole('button', { name: 'Run 15' });
+  expect(screen.queryByRole('button', { name: 'Continue Sim #15' })).toBeNull();
 });
 
 it('discards a preflight response when data changed while it was pending', async () => {
