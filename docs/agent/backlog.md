@@ -160,11 +160,14 @@ avoid silent abstention surprises.
 Acceptance: docs + tests.
 
 ### AIHF-018 — Carried-run chain UI
-Status: open
+Status: done (2026-11-22, `d5baed0`; backend 443 tests, frontend 41 tests + lint/build). Simulation history offers Continue for completed runs whose closing book is usable, inherits universe/benchmark/connection/model/capital, starts on the parent's actual `valuation_date` (not the requested `end_date`), sends `carried_from_run_id`, shows the preflight carried-book summary and parent/child lineage, and blocks incomplete or bookless parents. Run summaries now expose `valuation_date` and `carryable`; nullable/missing books and partial coverage have backend and component regressions.
 Goal: expose `carried_from_run_id` in the Web simulation form, offer continuing
 a selected completed run, and show parent/child links in history.
 Acceptance: users can create and identify carried runs without the ops CLI;
 tests cover the form/preflight/result states.
+Follow-up: lineage is derived from the 50 newest runs; older children are not
+linked (AIHF-023). `carryable` is an optimistic pre-check and preflight remains
+authoritative for NAV/cash consistency.
 
 ### AIHF-019 — Resume interrupted simulation
 Status: open
@@ -204,3 +207,10 @@ Goal: join retention candidates to `sim_run` state so `--apply` cannot remove
 telemetry belonging to an active or pending simulation.
 Acceptance: active/pending run logs are rejected or protected even from a stale
 approved plan; tests cover a run starting after plan approval; docs updated.
+
+### AIHF-023 — Lineage beyond the 50-run history window
+Status: open
+Goal: let history link parents/children that fall outside `list_sim_runs`'s
+50-newest window, without increasing the default payload.
+Acceptance: a child whose parent is older than the window still shows a working
+parent link; the solution is bounded and covered by a backend/frontend test.
