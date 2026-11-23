@@ -365,3 +365,20 @@ def sim_runs():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/sim/lineage/{sim_id}")
+def sim_lineage(sim_id: int):
+    """Resolve one run's parent and children beyond the history window."""
+    try:
+        from hedge_fund.simulation.runner import get_sim_lineage
+
+        result = get_sim_lineage(_DB_PATH, sim_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="sim not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("simulation lineage lookup failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+

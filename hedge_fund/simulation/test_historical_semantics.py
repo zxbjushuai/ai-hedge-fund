@@ -37,6 +37,7 @@ from hedge_fund.simulation.audit import (
 from hedge_fund.simulation.runner import (
     SimRunner,
     _trading_days,
+    get_sim_lineage,
     get_sim_result,
     get_sim_status,
     list_sim_runs,
@@ -857,3 +858,75 @@ def test_openrouter_provider_uses_free_router(monkeypatch):
     assert client.complete("system", "user") == '{"signal":"neutral"}'
     assert captured["base_url"] == "https://openrouter.ai/api/v1"
     assert captured["model"] == "openrouter/free"
+
+
+def _lineage_run(
+    session, name: str, created_at: str, *, carried_from_run_id: int | None = None,
+    status: str = "completed",
+) -> SimRun:
+    run = SimRun(
+        name=name, tickers=json.dumps(["AAA"]), benchmark="SPY",
+        start_date="2024-01-01", end_date="2024-01-02",
+        initial_capital=1000, status=status, total_days=1,
+        final_nav=1000 if status == "completed" else None,
+        carried_from_run_id=carried_from_run_id, created_at=created_at,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def test_lineage_resolves_a_parent_outside_the_history_window(tmp_path: Path):
+    db = tmp_path / "lineage-window.db"
+    with get_session(str(db)) as session:
+        parent = _lineage_run(session, "parent", "2026-01-01T00:00:00+00:00")
+        for index in range(55):
+            _lineage_run(
+                session,
+                f"filler-{index}",
+                f"2026-02-01T00:{index:02d}:00+00:00",
+            )
+        child = _lineage_run(
+            session, "child", "2026-03-01T00:00:00+00:00",
+            carried_from_run_id=parent.id,
+        )
+        session.commit()
+        parent_id, child_id = parent.id, child.id
+
+    listed_ids = {run["id"] for run in list_sim_runs(str(db))}
+    assert parent_id not in listed_ids
+    assert child_id in listed_ids
+
+    child_lineage = get_sim_lineage(str(db), child_id)
+    assert child_lineage["parent"]["id"] == parent_id
+    assert child_lineage["children"] == []
+
+    parent_lineage = get_sim_lineage(str(db), parent_id)
+    assert [run["id"] for run in parent_lineage["children"]] == [child_id]
+    assert parent_lineage["children_truncated"] is False
+
+
+def test_lineage_children_are_bounded_and_report_truncation(tmp_path: Path):
+    db = tmp_path / "lineage-bounded.db"
+    with get_session(str(db)) as session:
+        parent = _lineage_run(session, "parent", "2026-01-01T00:00:00+00:00")
+        for index in range(53):
+            _lineage_run(
+                session,
+                f"child-{index}",
+                f"2026-02-01T00:{index:02d}:00+00:00",
+                carried_from_run_id=parent.id,
+            )
+        session.commit()
+        parent_id = parent.id
+
+    lineage = get_sim_lineage(str(db), parent_id)
+    assert len(lineage["children"]) == 50
+    assert lineage["children_truncated"] is True
+    assert lineage["max_children"] == 50
+
+
+def test_lineage_returns_none_for_unknown_run(tmp_path: Path):
+    db = tmp_path / "lineage-missing.db"
+    init_db(str(db))
+    assert get_sim_lineage(str(db), 999) is None

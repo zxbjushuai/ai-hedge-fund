@@ -481,6 +481,14 @@ export interface SimRunSummary {
   persona_refresh_policy: PersonaRefreshPolicy | null;
 }
 
+export interface SimLineage {
+  run_id: number;
+  parent: SimRunSummary | null;
+  children: SimRunSummary[];
+  children_truncated: boolean;
+  max_children: number;
+}
+
 export const simulationApi = {
   async syncSecurities(): Promise<{ total: number; created: number; updated: number; deactivated: number }> {
     const res = await fetch(`${API_BASE_URL}/dashboard/securities/sync`, { method: 'POST' });
@@ -668,6 +676,12 @@ export const simulationApi = {
 
   async listSimRuns(): Promise<{ runs: SimRunSummary[] }> {
     const res = await fetch(`${API_BASE_URL}/dashboard/sim/runs`);
+    await requireOk(res);
+    return res.json();
+  },
+
+  async getSimLineage(simId: number): Promise<SimLineage> {
+    const res = await fetch(`${API_BASE_URL}/dashboard/sim/lineage/${simId}`);
     await requireOk(res);
     return res.json();
   },

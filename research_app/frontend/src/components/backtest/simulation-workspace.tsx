@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { simulationApi, type CacheItem, type LlmConnectionOption, type SimPreflight, type SimResult, type SimRunRequest, type SimRunSummary, type SimStatus } from '@/services/simulation-api';
+import { simulationApi, type CacheItem, type LlmConnectionOption, type SimLineage, type SimPreflight, type SimResult, type SimRunRequest, type SimRunSummary, type SimStatus } from '@/services/simulation-api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cacheDetails } from '@/lib/cache-details';
@@ -61,6 +61,10 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   const [viewing, setViewing] = useState<number | null>(null);
   const [resultError, setResultError] = useState('');
   const [resultLoading, setResultLoading] = useState(false);
+  const [lineage, setLineage] = useState<SimLineage | null>(null);
+  const [lineageError, setLineageError] = useState('');
+  const [lineageLoading, setLineageLoading] = useState(false);
+  const [lineageRevision, setLineageRevision] = useState(0);
   const resultSequence = useRef(0);
   const dateTouched = useRef(false);
   const initializedDates = useRef(false);
@@ -128,11 +132,20 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
   }, [historyRevision]);
   const viewResult = useCallback(async (id: number) => {
     const sequence = ++resultSequence.current;
-    setViewing(id); setResult(null); setResultError(''); setResultLoading(true);
+    setViewing(id); setResult(null); setResultError(''); setResultLoading(true); setLineageRevision(value => value + 1);
     try { const next = await simulationApi.getSimResult(id); if (sequence === resultSequence.current) setResult(next); }
     catch (err) { if (sequence === resultSequence.current) setResultError(message(err)); }
     finally { if (sequence === resultSequence.current) setResultLoading(false); }
   }, []);
+  useEffect(() => {
+    if (viewing == null) { setLineage(null); setLineageError(''); setLineageLoading(false); return; }
+    let current = true;
+    setLineageLoading(true); setLineageError('');
+    simulationApi.getSimLineage(viewing).then(data => { if (current) setLineage(data); })
+      .catch(err => { if (current) { setLineage(null); setLineageError(message(err)); } })
+      .finally(() => { if (current) setLineageLoading(false); });
+    return () => { current = false; };
+  }, [viewing, lineageRevision, historyRevision]);
   const runId = run?.id;
   useEffect(() => {
     if (!runId || !running) return;
@@ -281,7 +294,12 @@ export function SimulationWorkspace({ revision, onRefresh, onData, onProviders, 
     </div>
     <section hidden={tab !== 'history'} className="history-section"><div className="section-heading"><h2>Simulation history</h2><Button variant="outline" onClick={() => setHistoryRevision(value => value + 1)}>Refresh history</Button></div>{historyError && <p role="alert" className="notice error">{historyError}</p>}
       <div className="table-scroll"><table className="research-table"><thead><tr><th>Run</th><th>Status</th><th>Period / securities</th><th>Connection / model</th><th>Benchmark</th><th>Final NAV</th></tr></thead><tbody>{!runs.length && <tr><td colSpan={6}>No saved simulations yet.</td></tr>}{runs.map(item => <tr key={item.id} data-selected={viewing === item.id}><td><button className="text-link" onClick={() => void viewResult(item.id)}>{item.name || `Sim #${item.id}`}</button><span className="cell-secondary">{lineageControls(item.carried_from_run_id, childrenByParent.get(item.id))}</span></td><td>{item.status}{['running', 'pending', 'cancelling'].includes(item.status) && !running && <Button variant="ghost" onClick={() => { setRun({ id: item.id }); setTab('running'); setPollRevision(value => value + 1); }}>Track</Button>}{['running', 'pending'].includes(item.status) && <Button variant="ghost" disabled={cancelBusy} onClick={() => void cancelRun(item.id)}>Cancel</Button>}{continuationEligible(item) && <Button variant="ghost" onClick={() => continueRun(item)}>Continue Sim #{item.id}</Button>}{item.error_message && item.status !== 'cancelled' && <p className="notice error">{item.error_message}</p>}</td><td>{item.start_date} – {item.end_date}<span className="cell-secondary">{item.tickers.join(', ')}</span></td><td>{item.llm_connection_name || item.provider || 'N/A'}<span className="cell-secondary">{item.model || 'N/A'}</span></td><td>{item.benchmark || 'N/A'}</td><td>{item.final_nav == null ? '—' : item.final_nav.toLocaleString(undefined, { style: 'currency', currency: 'USD' })}</td></tr>)}</tbody></table></div>
-      {resultLoading && <p role="status">Loading result #{viewing}…</p>}{resultError && <p role="alert" className="notice error">{resultError}<Button variant="outline" onClick={() => viewing && void viewResult(viewing)}>Retry result</Button></p>}{result && <div className="result-panel"><h2>Simulation #{viewing}</h2><p className="quiet">{lineageControls(result.carried_from_run_id, childrenByParent.get(result.id))}</p><SimResults result={result} /></div>}
+      {resultLoading && <p role="status">Loading result #{viewing}…</p>}{resultError && <p role="alert" className="notice error">{resultError}<Button variant="outline" onClick={() => viewing && void viewResult(viewing)}>Retry result</Button></p>}{lineageLoading && <p role="status" className="quiet">Loading lineage…</p>}{lineageError && <p role="alert" className="notice error">Lineage unavailable: {lineageError}<Button variant="outline" onClick={() => setLineageRevision(value => value + 1)}>Retry lineage</Button></p>}{result && (() => {
+        const resolved = lineage?.run_id === result.id ? lineage : null;
+        const parentId = resolved ? (resolved.parent?.id ?? result.carried_from_run_id) : result.carried_from_run_id;
+        const children = resolved ? resolved.children : childrenByParent.get(result.id);
+        return <div className="result-panel"><h2>Simulation #{viewing}</h2><p className="quiet">{lineageControls(parentId, children)}</p>{resolved?.children_truncated && <p className="quiet">Showing the newest {resolved.max_children} children.</p>}<SimResults result={result} /></div>;
+      })()}
     </section>
   </div>;
 }

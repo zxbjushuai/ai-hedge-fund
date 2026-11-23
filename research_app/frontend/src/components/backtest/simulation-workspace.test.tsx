@@ -29,6 +29,7 @@ beforeEach(() => {
   vi.spyOn(simulationApi, 'getCachedSecurity').mockImplementation(async ticker => details(ticker));
   vi.spyOn(simulationApi, 'listUniverses').mockResolvedValue({ universes: [] });
   vi.spyOn(simulationApi, 'listSimRuns').mockResolvedValue({ runs: [] });
+  vi.spyOn(simulationApi, 'getSimLineage').mockImplementation(async simId => ({ run_id: simId, parent: null, children: [], children_truncated: false, max_children: 50 }));
   vi.spyOn(simulationApi, 'getSystemStatus').mockResolvedValue({
     startup_recovery: {
       completed_at: '2026-11-19T01:03:58+00:00', orphaned_simulations_recovered: 0,
@@ -277,6 +278,7 @@ it('links parents and children in history and the selected result', async () => 
   const parent = completedRun(15);
   const child = completedRun(16, { name: 'Child run', carried_from_run_id: 15 });
   vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [child, parent] });
+  vi.mocked(simulationApi.getSimLineage).mockImplementation(async simId => ({ run_id: simId, parent: null, children: simId === 15 ? [child] : [], children_truncated: false, max_children: 50 }));
   vi.spyOn(simulationApi, 'getSimResult').mockResolvedValue({
     ...parent, total_return_pct: 5, benchmark_return_pct: 2, excess_return_pct: 3, max_drawdown_pct: 1,
     sharpe_ratio: 1.2, nav_curve: [{ date: days[0], nav: 100000, cash: 100000, equity: 0, benchmark_nav: 100000 }],
@@ -347,4 +349,55 @@ it('offers a retry for failed detail requests without treating the error as empt
   fireEvent.click(screen.getByRole('button', { name: 'Retry coverage' }));
   expect(initial.onRefresh).toHaveBeenCalledTimes(1);
   expect((screen.getByRole('button', { name: 'Review simulation' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('resolves lineage for runs outside the visible history window', async () => {
+  const parent = completedRun(1, { name: 'Old parent' });
+  const child = completedRun(51, { name: 'Visible child', carried_from_run_id: 1 });
+  const olderChild = completedRun(2, { name: 'Older child', carried_from_run_id: 1 });
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [child] });
+  vi.mocked(simulationApi.getSimLineage).mockImplementation(async simId => simId === 1
+    ? { run_id: 1, parent: null, children: [olderChild], children_truncated: false, max_children: 50 }
+    : { run_id: simId, parent, children: [], children_truncated: false, max_children: 50 });
+  vi.spyOn(simulationApi, 'getSimResult').mockImplementation(async simId => ({
+    ...(simId === 1 ? parent : olderChild),
+    total_return_pct: 5, benchmark_return_pct: 2, excess_return_pct: 3, max_drawdown_pct: 1,
+    sharpe_ratio: 1.2, nav_curve: [{ date: days[0], nav: 100000, cash: 100000, equity: 0, benchmark_nav: 100000 }],
+    trades: [], trade_count: 0, buy_count: 0, sell_count: 0, status: 'completed', audit_available: false,
+  } as SimResult));
+
+  render(<SimulationWorkspace {...props()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+
+  const parentLink = await screen.findByRole('button', { name: 'From Sim #1' });
+  fireEvent.click(parentLink);
+  await screen.findByRole('heading', { name: 'Simulation #1' });
+  expect(await screen.findByRole('button', { name: 'Child Sim #2' })).toBeTruthy();
+  expect(simulationApi.getSimLineage).toHaveBeenCalledWith(1);
+});
+
+it('refreshes the selected lineage when history changes', async () => {
+  const parent = completedRun(1, { name: 'Old parent' });
+  const child = completedRun(2, { name: 'New child', carried_from_run_id: 1 });
+  const result = (run: typeof parent) => ({
+    ...run, total_return_pct: 5, benchmark_return_pct: 2, excess_return_pct: 3,
+    max_drawdown_pct: 1, sharpe_ratio: 1.2,
+    nav_curve: [{ date: days[0], nav: 100000, cash: 100000, equity: 0, benchmark_nav: 100000 }],
+    trades: [], trade_count: 0, buy_count: 0, sell_count: 0, status: 'completed', audit_available: false,
+  } as SimResult);
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [parent] });
+  vi.mocked(simulationApi.getSimLineage).mockImplementation(async simId => ({ run_id: simId, parent: null, children: [], children_truncated: false, max_children: 50 }));
+  vi.spyOn(simulationApi, 'getSimResult').mockImplementation(async () => result(parent));
+
+  render(<SimulationWorkspace {...props()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'History' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Old parent' }));
+  await screen.findByRole('heading', { name: 'Simulation #1' });
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Child Sim #2' })).toBeNull());
+
+  vi.mocked(simulationApi.listSimRuns).mockResolvedValue({ runs: [child, parent] });
+  vi.mocked(simulationApi.getSimLineage).mockImplementation(async simId => ({ run_id: simId, parent: null, children: simId === 1 ? [child] : [], children_truncated: false, max_children: 50 }));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh history' }));
+
+  expect((await screen.findAllByRole('button', { name: 'Child Sim #2' })).length).toBeGreaterThan(0);
 });

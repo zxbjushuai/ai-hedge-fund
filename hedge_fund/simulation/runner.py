@@ -1058,6 +1058,75 @@ def get_sim_result(sim_id: int, db_path: str) -> dict | None:
         session.close()
 
 
+def _run_summaries(session: Session, rows: list[SimRun]) -> list[dict]:
+    """Build the compact history payload for an explicit set of runs.
+
+    Lookups outside the 50-newest history window reuse this helper so parent
+    and child links stay small and bounded.
+    """
+    run_ids = [r.id for r in rows]
+    valuation_dates = {
+        sim_run_id: cycle_date
+        for sim_run_id, cycle_date in session.execute(
+            select(
+                SimNavSnapshot.sim_run_id,
+                func.max(SimNavSnapshot.cycle_date),
+            )
+            .where(SimNavSnapshot.sim_run_id.in_(run_ids))
+            .group_by(SimNavSnapshot.sim_run_id)
+        ).all()
+    } if run_ids else {}
+    latest_cycle_payload = {
+        sim_run_id: payload
+        for sim_run_id, payload in session.execute(
+            select(SimCycleRecord.sim_run_id, SimCycleRecord.payload)
+            .where(
+                SimCycleRecord.sim_run_id.in_(run_ids),
+                SimCycleRecord.status == "completed",
+            )
+            .order_by(SimCycleRecord.sim_run_id, SimCycleRecord.cycle_number)
+        ).all()
+    } if run_ids else {}
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "tickers": json.loads(r.tickers),
+            "start_date": r.start_date,
+            "end_date": r.end_date,
+            "valuation_date": valuation_dates.get(r.id),
+            "carryable": (
+                r.status == "completed"
+                and r.final_nav is not None
+                and valuation_dates.get(r.id) is not None
+                and latest_cycle_payload.get(r.id) is not None
+            ),
+            "initial_capital": r.initial_capital,
+            "carried_from_run_id": r.carried_from_run_id,
+            "benchmark": r.benchmark,
+            "provider": r.llm_provider,
+            "protocol": r.llm_protocol,
+            "model": r.llm_model,
+            "llm_connection_id": r.llm_connection_id,
+            "llm_connection_name": r.llm_connection_name,
+            "llm_base_url": r.llm_base_url,
+            "status": r.status,
+            "current_day": r.current_day,
+            "total_days": r.total_days,
+            "final_nav": r.final_nav,
+            "created_at": r.created_at,
+            "completed_at": r.completed_at,
+            "error_message": r.error_message,
+            "warnings": json.loads(r.warnings or "[]"),
+            "models": json.loads(r.models or "[]"),
+            "persona_refresh_policy": _persona_policy_payload(
+                r.persona_refresh_policy,
+            ),
+        }
+        for r in rows
+    ]
+
+
 def list_sim_runs(db_path: str) -> list[dict]:
     init_db(db_path)
     session = get_session(db_path)
@@ -1065,66 +1134,49 @@ def list_sim_runs(db_path: str) -> list[dict]:
         rows = session.execute(
             select(SimRun).order_by(SimRun.created_at.desc()).limit(50)
         ).scalars().all()
-        run_ids = [r.id for r in rows]
-        valuation_dates = {
-            sim_run_id: cycle_date
-            for sim_run_id, cycle_date in session.execute(
-                select(
-                    SimNavSnapshot.sim_run_id,
-                    func.max(SimNavSnapshot.cycle_date),
-                )
-                .where(SimNavSnapshot.sim_run_id.in_(run_ids))
-                .group_by(SimNavSnapshot.sim_run_id)
-            ).all()
-        } if run_ids else {}
-        latest_cycle_payload = {
-            sim_run_id: payload
-            for sim_run_id, payload in session.execute(
-                select(SimCycleRecord.sim_run_id, SimCycleRecord.payload)
-                .where(
-                    SimCycleRecord.sim_run_id.in_(run_ids),
-                    SimCycleRecord.status == "completed",
-                )
-                .order_by(SimCycleRecord.sim_run_id, SimCycleRecord.cycle_number)
-            ).all()
-        } if run_ids else {}
-        return [
-            {
-                "id": r.id,
-                "name": r.name,
-                "tickers": json.loads(r.tickers),
-                "start_date": r.start_date,
-                "end_date": r.end_date,
-                "valuation_date": valuation_dates.get(r.id),
-                "carryable": (
-                    r.status == "completed"
-                    and r.final_nav is not None
-                    and valuation_dates.get(r.id) is not None
-                    and latest_cycle_payload.get(r.id) is not None
-                ),
-                "initial_capital": r.initial_capital,
-                "carried_from_run_id": r.carried_from_run_id,
-                "benchmark": r.benchmark,
-                "provider": r.llm_provider,
-                "protocol": r.llm_protocol,
-                "model": r.llm_model,
-                "llm_connection_id": r.llm_connection_id,
-                "llm_connection_name": r.llm_connection_name,
-                "llm_base_url": r.llm_base_url,
-                "status": r.status,
-                "current_day": r.current_day,
-                "total_days": r.total_days,
-                "final_nav": r.final_nav,
-                "created_at": r.created_at,
-                "completed_at": r.completed_at,
-                "error_message": r.error_message,
-                "warnings": json.loads(r.warnings or "[]"),
-                "models": json.loads(r.models or "[]"),
-                "persona_refresh_policy": _persona_policy_payload(
-                    r.persona_refresh_policy,
-                ),
-            }
-            for r in rows
-        ]
+        return _run_summaries(session, rows)
+    finally:
+        session.close()
+
+
+def get_sim_lineage(
+    db_path: str, sim_id: int, *, max_children: int = 50,
+) -> dict | None:
+    """Resolve one run's parent and children without the history window.
+
+    The parent is fetched by id, so a child whose parent fell out of the
+    50-newest list still gets a link target. Children are capped and the
+    response reports truncation instead of growing with the run history.
+    """
+    init_db(db_path)
+    session = get_session(db_path)
+    try:
+        run = session.get(SimRun, sim_id)
+        if run is None:
+            return None
+        parent_rows: list[SimRun] = []
+        if run.carried_from_run_id is not None:
+            parent = session.get(SimRun, run.carried_from_run_id)
+            if parent is not None:
+                parent_rows.append(parent)
+        child_rows = session.execute(
+            select(SimRun)
+            .where(SimRun.carried_from_run_id == sim_id)
+            .order_by(SimRun.created_at.desc(), SimRun.id.desc())
+            .limit(max_children + 1)
+        ).scalars().all()
+        truncated = len(child_rows) > max_children
+        child_rows = child_rows[:max_children]
+        summaries = {
+            item["id"]: item
+            for item in _run_summaries(session, parent_rows + child_rows)
+        }
+        return {
+            "run_id": sim_id,
+            "parent": summaries.get(run.carried_from_run_id),
+            "children": [summaries[row.id] for row in child_rows],
+            "children_truncated": truncated,
+            "max_children": max_children,
+        }
     finally:
         session.close()
