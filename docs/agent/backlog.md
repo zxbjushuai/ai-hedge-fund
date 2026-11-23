@@ -31,6 +31,9 @@ and verified in one run. Update status with the date and commit hash.
   threshold; older persisted runs are backfilled with the default on read.
 - Retention reads active simulation state read-only, protects
   `pending`/`running`/`cancelling` run logs, and rechecks state at apply time.
+- Simulation lineage is resolved on demand through
+  `/dashboard/sim/lineage/{sim_id}` (parent by id, newest 50 children with a
+  truncation flag), so chains stay navigable beyond the 50-run history payload.
 
 ## P0 — daily pipeline and reliability
 
@@ -209,8 +212,10 @@ Acceptance: active/pending run logs are rejected or protected even from a stale
 approved plan; tests cover a run starting after plan approval; docs updated.
 
 ### AIHF-023 — Lineage beyond the 50-run history window
-Status: open
+Status: done (2026-11-23, `3356a82`; backend 448 tests, frontend 43 tests + lint/build). Adds `GET /dashboard/sim/lineage/{sim_id}`, which resolves the parent by id and returns up to 50 children with an explicit `children_truncated` flag. The Simulation result panel fetches lineage on demand, falls back to the visible-window map while loading, refetches after history refreshes, and shows loading/error/retry states. Run summaries were extracted into one shared helper so history and lookup payloads stay identical. Backend regression tests cover a parent outside the window, children outside the window, truncation, and unknown runs; the component test covers the lookup plus refresh invalidation.
 Goal: let history link parents/children that fall outside `list_sim_runs`'s
 50-newest window, without increasing the default payload.
 Acceptance: a child whose parent is older than the window still shows a working
 parent link; the solution is bounded and covered by a backend/frontend test.
+Follow-up: children are capped at 50 per run; the response reports truncation
+but does not paginate. History itself still shows only the 50 newest runs.
